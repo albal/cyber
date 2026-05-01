@@ -1,0 +1,21 @@
+apiVersion: v2
+name: cyberscan
+description: Cyberscan — OSS web vulnerability scanner (v0.1 stub chart).
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+maintainers:
+  - name: cyberscan contributors
+dependencies:
+  - name: postgresql
+    version: 16.x.x
+    repository: https://charts.bitnami.com/bitnami
+    condition: postgresql.enabled
+  - name: redis
+    version: 20.x.x
+    repository: https://charts.bitnami.com/bitnami
+    condition: redis.enabled
+  - name: minio
+    version: 14.x.x
+    repository: https://charts.bitnami.com/bitnami
+    condition: minio.enabled

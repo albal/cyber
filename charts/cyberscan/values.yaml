@@ -1,0 +1,108 @@
+global:
+  image:
+    registry: ghcr.io
+    repository: cyberscan
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  domain: scan.example.com
+  tls:
+    enabled: false
+    issuer: letsencrypt-prod
+
+frontend:
+  replicas: 1
+  image:
+    name: cyberscan-frontend
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+backend:
+  replicas: 2
+  image:
+    name: cyberscan-backend
+  env:
+    FEEDS_USE_FIXTURES: "false"
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
+workers:
+  recon:
+    replicas: 1
+    image:
+      name: cyberscan-worker
+    queues: "recon"
+    resources:
+      requests: { cpu: 200m, memory: 256Mi }
+      limits:   { cpu: 1500m, memory: 1Gi }
+  vuln:
+    replicas: 1
+    image:
+      name: cyberscan-worker
+    queues: "vuln"
+    resources:
+      requests: { cpu: 300m, memory: 512Mi }
+      limits:   { cpu: 2000m, memory: 2Gi }
+  feeds:
+    schedule: "0 */6 * * *"
+    image:
+      name: cyberscan-worker
+    resources:
+      requests: { cpu: 100m, memory: 256Mi }
+      limits:   { cpu: 500m, memory: 1Gi }
+
+ingress:
+  enabled: false
+  className: nginx
+  hosts:
+    - host: scan.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+          service: frontend
+        - path: /api
+          pathType: Prefix
+          service: backend
+
+postgresql:
+  enabled: true
+  auth:
+    username: cyberscan
+    password: cyberscan
+    database: cyberscan
+  primary:
+    persistence:
+      size: 20Gi
+
+redis:
+  enabled: true
+  architecture: standalone
+  auth:
+    enabled: false
+
+minio:
+  enabled: true
+  mode: standalone
+  auth:
+    rootUser: cyberscan
+    rootPassword: cyberscan-secret
+  defaultBuckets: "cyberscan-artifacts,cyberscan-feeds"
+  persistence:
+    size: 50Gi
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+networkPolicies:
+  enabled: false   # v0.2 turns this on

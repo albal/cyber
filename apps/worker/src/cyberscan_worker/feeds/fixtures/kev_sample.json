@@ -1,0 +1,8 @@
+{
+  "vulnerabilities": [
+    {"cveID": "CVE-2021-44228"},
+    {"cveID": "CVE-2017-5638"},
+    {"cveID": "CVE-2014-0160"},
+    {"cveID": "CVE-2019-11043"}
+  ]
+}

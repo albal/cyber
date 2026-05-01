@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
+.next/
+out/
+dist/
+*.tsbuildinfo
+.pnpm-store/
+
+# Env
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Build / artifacts
+build/
+*.log
+*.pid
+*.sqlite
+*.sqlite3
+
+# Scanner artifacts (local)
+.scan-artifacts/
+.feeds-cache/
+
+# Helm
+charts/*/charts/
+charts/*/Chart.lock
+
+# Playwright
+playwright-report/
+test-results/

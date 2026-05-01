@@ -1,0 +1,20 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "cyberscan.fullname" . }}-migrate
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: {{ include "cyberscan.image" (dict "name" .Values.backend.image.name "Values" .Values) }}
+          envFrom:
+            - secretRef:
+                name: {{ include "cyberscan.fullname" . }}-app
+          command: ["alembic", "upgrade", "head"]

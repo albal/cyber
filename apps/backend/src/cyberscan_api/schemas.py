@@ -1,0 +1,87 @@
+import uuid
+from datetime import datetime
+
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, HttpUrl
+
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class UserOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: uuid.UUID
+    email: EmailStr
+    is_admin: bool
+
+
+class AssetCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    target_url: HttpUrl
+    verification_method: str = Field(default="http_file", pattern="^(http_file|dns_txt|http_header)$")
+
+
+class AssetOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: uuid.UUID
+    name: str
+    target_url: str
+    hostname: str
+    verification_method: str
+    verification_token: str
+    verification_status: str
+    verified_at: datetime | None
+    created_at: datetime
+
+
+class VerificationInstructions(BaseModel):
+    method: str
+    token: str
+    instructions: str
+
+
+class ScanCreate(BaseModel):
+    asset_id: uuid.UUID
+
+
+class ScanOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: uuid.UUID
+    asset_id: uuid.UUID
+    status: str
+    stage: str | None
+    progress: int
+    started_at: datetime | None
+    finished_at: datetime | None
+    error: str | None
+    summary: dict | None
+    created_at: datetime
+
+
+class FindingOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: uuid.UUID
+    scan_id: uuid.UUID
+    title: str
+    template_id: str | None
+    cve_ids: list[str]
+    cwe_ids: list[str]
+    severity: str
+    cvss_score: float | None
+    epss_score: float | None
+    is_kev: bool
+    risk_score: float
+    location: str | None
+    matcher_name: str | None
+    request: str | None
+    response_excerpt: str | None
+    remediation: str | None
+    references: list[str]
+    compliance_tags: list[str]
+    diff_status: str | None
