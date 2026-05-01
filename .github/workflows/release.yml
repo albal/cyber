@@ -13,6 +13,8 @@ permissions:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAMESPACE: ${{ github.repository_owner }}/cyberscan
+  # Opt every JS-based action into Node 24 ahead of the June 2026 default flip.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   images:
@@ -23,7 +25,7 @@ jobs:
       matrix:
         component: [backend, worker, frontend]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: docker/setup-buildx-action@v3
 
@@ -62,7 +64,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: images
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: azure/setup-helm@v4
         with:

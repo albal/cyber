@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+env:
+  # Opt every JS-based action into Node 24 ahead of the June 2026 default flip.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -17,9 +21,9 @@ jobs:
     name: pytest (backend + worker)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: "pip"
@@ -41,7 +45,7 @@ jobs:
       matrix:
         component: [backend, worker, frontend]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: docker/setup-buildx-action@v3
 
@@ -58,7 +62,7 @@ jobs:
     name: helm lint + kubeconform
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: azure/setup-helm@v4
         with:
