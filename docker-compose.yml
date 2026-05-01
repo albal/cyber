@@ -73,6 +73,17 @@ services:
       - NET_RAW
       - NET_ADMIN
 
+  beat:
+    build:
+      context: ./apps/worker
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+      queue:
+        condition: service_healthy
+    command: ["celery", "-A", "cyberscan_worker.celery_app:celery_app", "beat", "--loglevel=info"]
+
   frontend:
     build:
       context: ./apps/frontend

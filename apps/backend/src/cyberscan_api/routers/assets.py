@@ -7,15 +7,15 @@ from sqlalchemy.orm import Session
 
 from cyberscan_api.core.db import get_db
 from cyberscan_api.models import Asset, AuditLog, Role, User, VerificationStatus
-from cyberscan_api.schemas import AssetCreate, AssetOut, VerificationInstructions
+from cyberscan_api.schemas import AssetCreate, AssetOut, AssetSchedule, VerificationInstructions
 from cyberscan_api.services import verification
-from cyberscan_api.services.auth_dep import get_current_user, require_role
+from cyberscan_api.services.auth_dep import get_current_user_or_token, require_role
 
 router = APIRouter(prefix="/api/v1/assets", tags=["assets"])
 
 
 @router.get("", response_model=list[AssetOut])
-def list_assets(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> list[Asset]:
+def list_assets(db: Session = Depends(get_db), user: User = Depends(get_current_user_or_token)) -> list[Asset]:
     return list(db.scalars(select(Asset).order_by(Asset.created_at.desc())))
 
 
@@ -57,7 +57,7 @@ def create_asset(
 def get_asset(
     asset_id: uuid.UUID,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user_or_token),
 ) -> Asset:
     asset = db.get(Asset, asset_id)
     if not asset:
@@ -69,7 +69,7 @@ def get_asset(
 def get_verification_instructions(
     asset_id: uuid.UUID,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user_or_token),
 ) -> VerificationInstructions:
     asset = db.get(Asset, asset_id)
     if not asset:
@@ -81,6 +81,47 @@ def get_verification_instructions(
             asset.verification_method, asset.hostname, asset.verification_token
         ),
     )
+
+
+@router.put("/{asset_id}/schedule", response_model=AssetOut)
+def set_schedule(
+    asset_id: uuid.UUID,
+    payload: AssetSchedule,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(Role.analyst)),
+) -> Asset:
+    """Set or update a per-asset cron schedule for recurring scans.
+
+    The cron expression is validated with croniter. Setting schedule_enabled=False
+    or schedule_cron=null disables the schedule.
+    """
+    asset = db.get(Asset, asset_id)
+    if not asset:
+        raise HTTPException(status_code=404, detail="asset not found")
+
+    if payload.schedule_cron:
+        try:
+            from croniter import croniter
+
+            croniter(payload.schedule_cron)
+        except (ImportError, ValueError, KeyError) as exc:
+            raise HTTPException(status_code=400, detail=f"invalid cron: {exc}") from exc
+
+    asset.schedule_cron = payload.schedule_cron
+    asset.schedule_enabled = bool(payload.schedule_cron) and payload.schedule_enabled
+    db.add(
+        AuditLog(
+            tenant_id=user.tenant_id,
+            actor_user_id=user.id,
+            action="asset.schedule",
+            target_type="asset",
+            target_id=str(asset.id),
+            details={"cron": payload.schedule_cron, "enabled": asset.schedule_enabled},
+        )
+    )
+    db.commit()
+    db.refresh(asset)
+    return asset
 
 
 @router.post("/{asset_id}/verify", response_model=AssetOut)

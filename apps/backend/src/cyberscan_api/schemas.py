@@ -29,6 +29,11 @@ class AssetCreate(BaseModel):
     verification_method: str = Field(default="http_file", pattern="^(http_file|dns_txt|http_header)$")
 
 
+class AssetSchedule(BaseModel):
+    schedule_cron: str | None = Field(default=None, max_length=64)
+    schedule_enabled: bool = False
+
+
 class AssetOut(BaseModel):
     model_config = ConfigDict(from_attributes=True, use_enum_values=True)
     id: uuid.UUID
@@ -39,6 +44,9 @@ class AssetOut(BaseModel):
     verification_token: str
     verification_status: str
     verified_at: datetime | None
+    schedule_cron: str | None
+    schedule_enabled: bool
+    last_scheduled_at: datetime | None
     created_at: datetime
 
 
@@ -50,6 +58,7 @@ class VerificationInstructions(BaseModel):
 
 class ScanCreate(BaseModel):
     asset_id: uuid.UUID
+    intrusive: bool = False
 
 
 class ScanOut(BaseModel):
@@ -63,6 +72,7 @@ class ScanOut(BaseModel):
     finished_at: datetime | None
     error: str | None
     summary: dict | None
+    intrusive: bool
     created_at: datetime
 
 
@@ -105,3 +115,23 @@ class NotificationChannelOut(BaseModel):
     min_severity: str
     enabled: bool
     created_at: datetime
+
+
+class ApiTokenCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+
+
+class ApiTokenOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True, use_enum_values=True)
+    id: uuid.UUID
+    name: str
+    token_prefix: str
+    revoked_at: datetime | None
+    last_used_at: datetime | None
+    created_at: datetime
+
+
+class ApiTokenCreated(ApiTokenOut):
+    """Returned once at creation; includes the plaintext token. Never persisted."""
+
+    token: str

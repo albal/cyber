@@ -7,14 +7,14 @@ from sqlalchemy.orm import Session
 from cyberscan_api.core.db import get_db
 from cyberscan_api.models import AuditLog, NotificationChannel, Role, Severity, User
 from cyberscan_api.schemas import NotificationChannelCreate, NotificationChannelOut
-from cyberscan_api.services.auth_dep import get_current_user, require_role
+from cyberscan_api.services.auth_dep import get_current_user_or_token, require_role
 
 router = APIRouter(prefix="/api/v1/notifications", tags=["notifications"])
 
 
 @router.get("/channels", response_model=list[NotificationChannelOut])
 def list_channels(
-    db: Session = Depends(get_db), user: User = Depends(get_current_user)
+    db: Session = Depends(get_db), user: User = Depends(get_current_user_or_token)
 ) -> list[NotificationChannel]:
     return list(
         db.scalars(

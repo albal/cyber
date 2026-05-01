@@ -31,21 +31,28 @@ class PassiveHit:
     references: list[str] = field(default_factory=list)
 
 
-def run(url: str, timeout_s: int = 600) -> list[PassiveHit]:
-    if shutil.which("zap-baseline.py"):
-        return _run_zap(url, timeout_s)
-    log.info("ZAP not available — running fallback passive header check on %s", url)
+def run(url: str, timeout_s: int = 600, intrusive: bool = False) -> list[PassiveHit]:
+    """Run the appropriate ZAP scan.
+
+    - intrusive=False (default): zap-baseline.py (passive only, safe).
+    - intrusive=True: zap-full-scan.py (active spider + active scan; requires
+      asset ownership re-verified within 7 days, gated upstream).
+    """
+    bin_name = "zap-full-scan.py" if intrusive else "zap-baseline.py"
+    if shutil.which(bin_name):
+        return _run_zap(url, timeout_s, bin_name)
+    log.info("%s not available — running fallback passive header check on %s", bin_name, url)
     return _run_fallback(url)
 
 
 # ---------- ZAP path ---------------------------------------------------------
 
 
-def _run_zap(url: str, timeout_s: int) -> list[PassiveHit]:
+def _run_zap(url: str, timeout_s: int, bin_name: str) -> list[PassiveHit]:
     with tempfile.TemporaryDirectory() as tmp:
         report = Path(tmp) / "report.json"
         cmd = [
-            "zap-baseline.py",
+            bin_name,
             "-t", url,
             "-J", str(report),
             "-I",  # don't fail on alerts, we collect them

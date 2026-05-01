@@ -144,9 +144,11 @@ def _previous_dedupe_keys(db: Session, asset_id: str, current_scan_id: str) -> s
 
 
 @celery_app.task(name="cyberscan_worker.pipeline.run_scan", queue="recon", bind=True)
-def run_scan(self, scan_id: str, tenant_id: str | None = None) -> dict:  # type: ignore[no-untyped-def]
+def run_scan(  # type: ignore[no-untyped-def]
+    self, scan_id: str, tenant_id: str | None = None, intrusive: bool = False
+) -> dict:
     s = get_settings()
-    log.info("run_scan start scan_id=%s tenant_id=%s", scan_id, tenant_id)
+    log.info("run_scan start scan_id=%s tenant_id=%s intrusive=%s", scan_id, tenant_id, intrusive)
 
     with SessionLocal() as db:
         # First load happens with admin GUC so we can read scans across tenants.
@@ -173,14 +175,23 @@ def run_scan(self, scan_id: str, tenant_id: str | None = None) -> dict:  # type:
 
             _set_state(db, scan_id, status="running", stage="vuln", progress=30)
 
-            # Stage 2a: nuclei (sharded)
+            # Stage 2a: nuclei (sharded). Intrusive mode lifts the severity
+            # filter and enables intrusive templates (brute-force, fuzzing).
             urls = [svc.url for svc in services] or [target_url]
             shards = nuclei.shard(urls, s.nuclei_shards)
             all_hits: list[nuclei.NucleiHit] = []
+            extra_args = ["-as"] if intrusive else None  # -as: automatic scan, includes intrusive
+            severities = (
+                ("critical", "high", "medium", "low", "info")
+                if intrusive
+                else ("critical", "high", "medium", "low")
+            )
             for i, bucket in enumerate(shards):
                 progress = 30 + int(30 * (i + 1) / max(len(shards), 1))
                 _set_state(db, scan_id, status="running", stage=f"vuln/shard{i+1}", progress=progress)
-                all_hits.extend(nuclei.run(bucket, timeout_s=600))
+                all_hits.extend(
+                    nuclei.run(bucket, severities=severities, extra_args=extra_args, timeout_s=600)
+                )
 
             # Stage 2b: TLS deep inspection on each TLS endpoint
             _set_state(db, scan_id, status="running", stage="tls", progress=70)
@@ -196,7 +207,9 @@ def run_scan(self, scan_id: str, tenant_id: str | None = None) -> dict:  # type:
             if not passive_targets:
                 passive_targets = [target_url]
             for url in passive_targets[:3]:  # cap fan-out for the 15-min SLA
-                passive_hits.extend(zap_baseline.run(url, timeout_s=300))
+                passive_hits.extend(
+                    zap_baseline.run(url, timeout_s=600 if intrusive else 300, intrusive=intrusive)
+                )
 
             _set_state(db, scan_id, status="running", stage="consolidate", progress=90)
 

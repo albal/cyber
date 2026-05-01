@@ -1,0 +1,25 @@
+{{- if .Values.keda.enabled }}
+{{- $address := printf "%s-redis-master.%s.svc:6379" .Release.Name .Release.Namespace -}}
+{{- range $pool, $cfg := .Values.workers }}
+{{- if and (ne $pool "feeds") $cfg.keda }}
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "cyberscan.fullname" $ }}-worker-{{ $pool }}
+spec:
+  scaleTargetRef:
+    name: {{ include "cyberscan.fullname" $ }}-worker-{{ $pool }}
+  minReplicaCount: {{ $cfg.keda.min | default 1 }}
+  maxReplicaCount: {{ $cfg.keda.max | default 5 }}
+  pollingInterval: 15
+  cooldownPeriod: 120
+  triggers:
+    - type: redis
+      metadata:
+        address: {{ $address | quote }}
+        listName: {{ $cfg.queues | quote }}
+        listLength: {{ $cfg.keda.lagTarget | default 5 | quote }}
+---
+{{- end }}
+{{- end }}
+{{- end }}

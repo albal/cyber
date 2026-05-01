@@ -40,6 +40,7 @@ workers:
     replicas: 1
     image: { name: cyberscan-worker }
     queues: "recon"
+    keda: { min: 1, max: 5, lagTarget: 5 }
     resources:
       requests: { cpu: 200m, memory: 256Mi }
       limits:   { cpu: 1500m, memory: 1Gi }
@@ -47,6 +48,7 @@ workers:
     replicas: 1
     image: { name: cyberscan-worker }
     queues: "vuln"
+    keda: { min: 1, max: 8, lagTarget: 5 }
     resources:
       requests: { cpu: 300m, memory: 512Mi }
       limits:   { cpu: 2000m, memory: 2Gi }
@@ -54,6 +56,7 @@ workers:
     replicas: 1
     image: { name: cyberscan-worker }
     queues: "tls"
+    keda: { min: 1, max: 4, lagTarget: 5 }
     resources:
       requests: { cpu: 100m, memory: 256Mi }
       limits:   { cpu: 500m, memory: 512Mi }
@@ -61,15 +64,31 @@ workers:
     replicas: 1
     image: { name: cyberscan-worker }
     queues: "passive"
+    keda: { min: 1, max: 4, lagTarget: 2 }   # ZAP is heavy — scale less aggressively
     resources:
       requests: { cpu: 200m, memory: 512Mi }
-      limits:   { cpu: 1000m, memory: 1500Mi }   # ZAP is heavy
+      limits:   { cpu: 1000m, memory: 1500Mi }
   feeds:
     schedule: "0 */6 * * *"
     image: { name: cyberscan-worker }
     resources:
       requests: { cpu: 100m, memory: 256Mi }
       limits:   { cpu: 500m, memory: 1Gi }
+
+beat:
+  enabled: true
+  image: { name: cyberscan-worker }
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits:   { cpu: 200m, memory: 256Mi }
+
+keda:
+  enabled: false   # opt-in: requires keda.sh installed in the cluster
+
+serviceMonitor:
+  enabled: false   # opt-in: requires Prometheus Operator
+  interval: 30s
+  additionalLabels: {}
 
 notifications:
   smtp:
@@ -125,4 +144,4 @@ podSecurityContext:
     type: RuntimeDefault
 
 networkPolicies:
-  enabled: false   # v0.2 turns this on
+  enabled: false   # set true once you've audited cluster DNS / ingress labels
