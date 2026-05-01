@@ -23,10 +23,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
        chmod +x /usr/local/bin/naabu /usr/local/bin/httpx /usr/local/bin/nuclei; \
        rm -f /tmp/*.zip
 
+COPY src ./src
 COPY pyproject.toml ./
 RUN pip install --upgrade pip && pip install -e .[dev]
 
-COPY src ./src
 
 # Pre-fetch nuclei templates at build time (cached layer)
 RUN nuclei -update-templates -silent || true
