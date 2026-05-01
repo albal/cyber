@@ -33,7 +33,12 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     if not user:
         raise creds_exc
     # Pin the per-session GUC so RLS scopes every subsequent query to this tenant.
-    db.execute(text("SET LOCAL app.tenant_id = :tid"), {"tid": str(user.tenant_id)})
+    # Postgres SET doesn't accept bind parameters; use set_config() which does.
+    # The third arg 'true' = LOCAL (transaction-scoped, like SET LOCAL).
+    db.execute(
+        text("SELECT set_config('app.tenant_id', :tid, true)"),
+        {"tid": str(user.tenant_id)},
+    )
     return user
 
 

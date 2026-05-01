@@ -24,7 +24,8 @@ class Settings(BaseSettings):
     seed_admin_email: str = Field(default="admin@example.com")
     seed_admin_password: str = Field(default="admin")
 
-    cors_origins: str = Field(default="http://localhost:3000")
+    # Comma-separated origins, or '*' to allow any (allow_credentials forced false in that case).
+    cors_origins: str = Field(default="*")
 
 
 @lru_cache

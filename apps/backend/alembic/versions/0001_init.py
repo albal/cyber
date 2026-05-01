@@ -26,16 +26,22 @@ def upgrade() -> None:
     )
     op.create_index("ix_users_email", "users", ["email"])
 
-    verification_status = sa.Enum(
+    # Create enums explicitly (idempotent), then reference with create_type=False
+    # so subsequent op.create_table() calls don't re-emit CREATE TYPE without
+    # checkfirst (which fails on a re-run with leftover types).
+    postgresql.ENUM(
         "pending", "verified", "expired", "failed", name="verification_status"
-    )
-    verification_status.create(op.get_bind(), checkfirst=True)
-    scan_status = sa.Enum(
+    ).create(op.get_bind(), checkfirst=True)
+    postgresql.ENUM(
         "queued", "running", "completed", "failed", "partial", name="scan_status"
-    )
-    scan_status.create(op.get_bind(), checkfirst=True)
-    severity = sa.Enum("critical", "high", "medium", "low", "info", name="severity")
-    severity.create(op.get_bind(), checkfirst=True)
+    ).create(op.get_bind(), checkfirst=True)
+    postgresql.ENUM(
+        "critical", "high", "medium", "low", "info", name="severity"
+    ).create(op.get_bind(), checkfirst=True)
+
+    verification_status = postgresql.ENUM(name="verification_status", create_type=False)
+    scan_status = postgresql.ENUM(name="scan_status", create_type=False)
+    severity = postgresql.ENUM(name="severity", create_type=False)
 
     op.create_table(
         "assets",

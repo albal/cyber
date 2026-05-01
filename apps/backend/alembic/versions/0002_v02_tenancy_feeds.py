@@ -32,8 +32,10 @@ def upgrade() -> None:
     )
 
     # 3. Role enum + users.role + users.tenant_id.
-    role = sa.Enum("owner", "admin", "analyst", "viewer", name="role")
-    role.create(op.get_bind(), checkfirst=True)
+    postgresql.ENUM("owner", "admin", "analyst", "viewer", name="role").create(
+        op.get_bind(), checkfirst=True
+    )
+    role = postgresql.ENUM(name="role", create_type=False)
 
     op.add_column("users", sa.Column("tenant_id", postgresql.UUID(as_uuid=True), nullable=True))
     op.add_column("users", sa.Column("role", role, nullable=True))
@@ -85,7 +87,12 @@ def upgrade() -> None:
         sa.Column("kind", sa.String(32), nullable=False),  # email|slack|teams
         sa.Column("target", sa.String(2048), nullable=False),
         sa.Column("enabled", sa.Boolean(), nullable=False, server_default=sa.true()),
-        sa.Column("min_severity", sa.Enum(name="severity"), nullable=False, server_default="high"),
+        sa.Column(
+            "min_severity",
+            postgresql.ENUM(name="severity", create_type=False),
+            nullable=False,
+            server_default="high",
+        ),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
     )
 

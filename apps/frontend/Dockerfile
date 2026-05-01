@@ -5,6 +5,9 @@ RUN npm install --omit=optional
 
 FROM node:24-alpine AS builder
 WORKDIR /app
+# Next.js inlines NEXT_PUBLIC_* at build time; runtime env is ignored.
+ARG NEXT_PUBLIC_API_URL=http://localhost:8000
+ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build

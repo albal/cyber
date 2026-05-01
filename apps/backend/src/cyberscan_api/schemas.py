@@ -15,7 +15,7 @@ class LoginRequest(BaseModel):
 
 
 class UserOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, use_enum_values=True)
     id: uuid.UUID
     tenant_id: uuid.UUID
     email: EmailStr
@@ -30,7 +30,7 @@ class AssetCreate(BaseModel):
 
 
 class AssetOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, use_enum_values=True)
     id: uuid.UUID
     name: str
     target_url: str
@@ -53,7 +53,7 @@ class ScanCreate(BaseModel):
 
 
 class ScanOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, use_enum_values=True)
     id: uuid.UUID
     asset_id: uuid.UUID
     status: str
@@ -67,7 +67,7 @@ class ScanOut(BaseModel):
 
 
 class FindingOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, use_enum_values=True)
     id: uuid.UUID
     scan_id: uuid.UUID
     title: str
@@ -98,7 +98,7 @@ class NotificationChannelCreate(BaseModel):
 
 
 class NotificationChannelOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, use_enum_values=True)
     id: uuid.UUID
     kind: str
     target: str
