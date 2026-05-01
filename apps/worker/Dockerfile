@@ -25,9 +25,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
        rm -f /tmp/*.zip
 
 COPY pyproject.toml ./
-RUN pip install --upgrade pip && pip install -e .[dev]
-
 COPY src ./src
+RUN pip install --upgrade pip && pip install -e .[dev]
 
 # Pre-fetch nuclei templates at build time (cached layer)
 RUN nuclei -update-templates -silent || true

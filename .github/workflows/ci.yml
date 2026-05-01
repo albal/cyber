@@ -73,9 +73,9 @@ jobs:
         run: helm lint charts/cyberscan
 
       - name: helm template (smoke render)
-        run: helm template cyberscan charts/cyberscan > /tmp/rendered.yaml
+        run: helm template cyberscan charts/cyberscan > rendered.yaml
 
       - name: kubeconform
         uses: docker://ghcr.io/yannh/kubeconform:latest
         with:
-          args: -strict -ignore-missing-schemas -summary /tmp/rendered.yaml
+          args: -strict -ignore-missing-schemas -summary rendered.yaml
