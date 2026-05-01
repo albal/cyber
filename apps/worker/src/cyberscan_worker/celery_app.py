@@ -8,7 +8,11 @@ celery_app = Celery(
     "cyberscan",
     broker=_settings.celery_broker_url,
     backend=_settings.celery_result_backend,
-    include=["cyberscan_worker.pipeline", "cyberscan_worker.feeds.tasks"],
+    include=[
+        "cyberscan_worker.pipeline",
+        "cyberscan_worker.feeds.tasks",
+        "cyberscan_worker.scheduler",
+    ],
 )
 
 celery_app.conf.update(

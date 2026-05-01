@@ -91,6 +91,9 @@ export interface Asset {
   verification_token: string;
   verification_status: string;
   verified_at: string | null;
+  schedule_cron: string | null;
+  schedule_enabled: boolean;
+  last_scheduled_at: string | null;
   created_at: string;
 }
 
@@ -104,7 +107,21 @@ export interface Scan {
   finished_at: string | null;
   error: string | null;
   summary: Record<string, unknown> | null;
+  intrusive: boolean;
   created_at: string;
+}
+
+export interface ApiToken {
+  id: string;
+  name: string;
+  token_prefix: string;
+  revoked_at: string | null;
+  last_used_at: string | null;
+  created_at: string;
+}
+
+export interface ApiTokenCreated extends ApiToken {
+  token: string; // plaintext, returned once
 }
 
 export interface Finding {

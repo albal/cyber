@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from cyberscan_api.core.config import get_settings
-from cyberscan_api.routers import assets, auth, notifications, scans
+from cyberscan_api.routers import assets, auth, notifications, scans, tokens
 
 settings = get_settings()
 
@@ -34,6 +34,7 @@ app.include_router(auth.router)
 app.include_router(assets.router)
 app.include_router(scans.router)
 app.include_router(notifications.router)
+app.include_router(tokens.router)
 
 
 @app.get("/healthz")

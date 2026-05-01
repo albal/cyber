@@ -1,7 +1,13 @@
 import asyncio
+import csv
+import io
+import json
 import uuid
+from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
@@ -9,9 +15,12 @@ from cyberscan_api.core.celery_client import celery_app
 from cyberscan_api.core.db import SessionLocal, get_db
 from cyberscan_api.models import Asset, AuditLog, Finding, Role, Scan, User, VerificationStatus
 from cyberscan_api.schemas import FindingOut, ScanCreate, ScanOut
-from cyberscan_api.services.auth_dep import get_current_user, require_role
+from cyberscan_api.services.auth_dep import get_current_user_or_token, require_role
 
 router = APIRouter(prefix="/api/v1", tags=["scans"])
+
+# Intrusive scans require ownership re-verified within the last N days.
+INTRUSIVE_VERIFICATION_DAYS = 7
 
 
 @router.post("/scans", response_model=ScanOut, status_code=status.HTTP_201_CREATED)
@@ -29,7 +38,24 @@ def create_scan(
             detail="asset is not verified — verify ownership before scanning",
         )
 
-    scan = Scan(tenant_id=user.tenant_id, asset_id=asset.id, created_by=user.id)
+    if payload.intrusive:
+        if asset.verified_at is None or (
+            datetime.now(UTC) - asset.verified_at > timedelta(days=INTRUSIVE_VERIFICATION_DAYS)
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"intrusive scans require ownership re-verification within "
+                    f"the last {INTRUSIVE_VERIFICATION_DAYS} days — re-run verification first"
+                ),
+            )
+
+    scan = Scan(
+        tenant_id=user.tenant_id,
+        asset_id=asset.id,
+        created_by=user.id,
+        intrusive=payload.intrusive,
+    )
     db.add(scan)
     db.add(
         AuditLog(
@@ -38,7 +64,11 @@ def create_scan(
             action="scan.create",
             target_type="scan",
             target_id=str(scan.id),
-            details={"asset_id": str(asset.id), "target": asset.target_url},
+            details={
+                "asset_id": str(asset.id),
+                "target": asset.target_url,
+                "intrusive": payload.intrusive,
+            },
         )
     )
     db.commit()
@@ -46,14 +76,18 @@ def create_scan(
 
     celery_app.send_task(
         "cyberscan_worker.pipeline.run_scan",
-        kwargs={"scan_id": str(scan.id), "tenant_id": str(user.tenant_id)},
+        kwargs={
+            "scan_id": str(scan.id),
+            "tenant_id": str(user.tenant_id),
+            "intrusive": payload.intrusive,
+        },
         queue="recon",
     )
     return scan
 
 
 @router.get("/scans", response_model=list[ScanOut])
-def list_scans(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> list[Scan]:
+def list_scans(db: Session = Depends(get_db), user: User = Depends(get_current_user_or_token)) -> list[Scan]:
     return list(db.scalars(select(Scan).order_by(Scan.created_at.desc()).limit(100)))
 
 
@@ -61,7 +95,7 @@ def list_scans(db: Session = Depends(get_db), user: User = Depends(get_current_u
 def get_scan(
     scan_id: uuid.UUID,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user_or_token),
 ) -> Scan:
     scan = db.get(Scan, scan_id)
     if not scan:
@@ -73,7 +107,7 @@ def get_scan(
 def list_findings(
     scan_id: uuid.UUID,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user_or_token),
 ) -> list[Finding]:
     scan = db.get(Scan, scan_id)
     if not scan:
@@ -84,6 +118,92 @@ def list_findings(
             .where(Finding.scan_id == scan_id)
             .order_by(Finding.risk_score.desc(), Finding.severity)
         )
+    )
+
+
+_EXPORT_COLUMNS = (
+    "id", "title", "severity", "risk_score", "cvss_score", "epss_score", "is_kev",
+    "cve_ids", "cwe_ids", "compliance_tags", "location", "source", "diff_status",
+    "remediation", "created_at",
+)
+
+
+@router.get("/scans/{scan_id}/findings.csv")
+def export_findings_csv(
+    scan_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user_or_token),
+) -> StreamingResponse:
+    scan = db.get(Scan, scan_id)
+    if not scan:
+        raise HTTPException(status_code=404, detail="scan not found")
+
+    def _gen() -> "Iterator[str]":
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(_EXPORT_COLUMNS)
+        yield buf.getvalue()
+        buf.seek(0)
+        buf.truncate(0)
+
+        for f in db.scalars(
+            select(Finding)
+            .where(Finding.scan_id == scan_id)
+            .order_by(Finding.risk_score.desc(), Finding.severity)
+        ):
+            row = []
+            for col in _EXPORT_COLUMNS:
+                val = getattr(f, col)
+                if isinstance(val, list):
+                    val = "; ".join(map(str, val))
+                row.append("" if val is None else val)
+            writer.writerow(row)
+            yield buf.getvalue()
+            buf.seek(0)
+            buf.truncate(0)
+
+    filename = f"cyberscan-{scan_id}.csv"
+    return StreamingResponse(
+        _gen(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/scans/{scan_id}/findings.json")
+def export_findings_json(
+    scan_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user_or_token),
+) -> StreamingResponse:
+    scan = db.get(Scan, scan_id)
+    if not scan:
+        raise HTTPException(status_code=404, detail="scan not found")
+
+    def _serialize(f: Finding) -> dict:
+        return {
+            col: (v.isoformat() if isinstance((v := getattr(f, col)), datetime) else v)
+            for col in _EXPORT_COLUMNS
+        }
+
+    def _gen() -> "Iterator[bytes]":
+        first = True
+        yield b'{"scan_id":"' + str(scan_id).encode() + b'","findings":['
+        for f in db.scalars(
+            select(Finding)
+            .where(Finding.scan_id == scan_id)
+            .order_by(Finding.risk_score.desc(), Finding.severity)
+        ):
+            sep = b"" if first else b","
+            first = False
+            yield sep + json.dumps(_serialize(f), default=str).encode()
+        yield b"]}"
+
+    filename = f"cyberscan-{scan_id}.json"
+    return StreamingResponse(
+        _gen(),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 

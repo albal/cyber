@@ -52,8 +52,13 @@ def run(targets: list[str], timeout_s: int = 120) -> list[HttpService]:
         log.warning("httpx timed out")
         return []
 
+    return parse(proc.stdout)
+
+
+def parse(jsonl: str) -> list[HttpService]:
+    """Parse httpx's JSONL output. Public entry point for tests."""
     out: list[HttpService] = []
-    for line in proc.stdout.splitlines():
+    for line in jsonl.splitlines():
         line = line.strip()
         if not line:
             continue

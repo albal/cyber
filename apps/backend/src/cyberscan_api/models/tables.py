@@ -95,6 +95,13 @@ class Asset(Base):
     )
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # Scheduled scans
+    schedule_cron: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    schedule_enabled: Mapped[bool] = mapped_column(default=False)
+    last_scheduled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     created_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -117,6 +124,7 @@ class Scan(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     summary: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    intrusive: Mapped[bool] = mapped_column(default=False)
 
     created_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -192,4 +200,23 @@ class NotificationChannel(Base):
     min_severity: Mapped[Severity] = mapped_column(
         Enum(Severity, name="severity"), default=Severity.high, nullable=False
     )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ApiToken(Base):
+    """Long-lived bearer token for CI/CD-style automation. The plaintext is
+    only returned once on creation; we store sha256(token) so a compromised
+    DB doesn't leak usable tokens."""
+
+    __tablename__ = "api_tokens"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id"), index=True, nullable=False
+    )
+    created_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
+    token_prefix: Mapped[str] = mapped_column(String(16), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
