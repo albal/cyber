@@ -1,18 +1,25 @@
-.PHONY: help up down logs build seed e2e bench fmt lint test clean
+VENV       := .venv
+PY         := $(VENV)/bin/python
+PIP        := $(VENV)/bin/pip
+PYTEST     := $(VENV)/bin/pytest
+
+.PHONY: help up down logs build seed e2e bench fmt lint test test-local venv clean
 
 help:
 	@echo "Cyberscan dev commands:"
-	@echo "  make up      - build and start the full stack (frontend, backend, worker, db, queue, minio, juice-shop)"
-	@echo "  make down    - stop and remove containers"
-	@echo "  make logs    - tail logs from all services"
-	@echo "  make build   - rebuild images"
-	@echo "  make seed    - run migrations + ingest cached feed fixtures + create seed admin"
-	@echo "  make e2e     - run Playwright end-to-end test"
-	@echo "  make bench   - run scan 10x and print p50/p95"
-	@echo "  make test    - run pytest + frontend tests"
-	@echo "  make fmt     - format (ruff, prettier)"
-	@echo "  make lint    - lint (ruff, mypy, eslint, hadolint)"
-	@echo "  make clean   - remove volumes"
+	@echo "  make up         - build and start the full stack (frontend, backend, worker, db, queue, minio, juice-shop)"
+	@echo "  make down       - stop and remove containers"
+	@echo "  make logs       - tail logs from all services"
+	@echo "  make build      - rebuild images"
+	@echo "  make seed       - run migrations + ingest cached feed fixtures + create seed admin"
+	@echo "  make e2e        - run Playwright end-to-end test"
+	@echo "  make bench      - run scan 10x and print p50/p95"
+	@echo "  make venv       - create .venv with backend + worker dev deps"
+	@echo "  make test-local - run pytest in the host venv (no docker required)"
+	@echo "  make test       - run pytest inside the running backend container + frontend tests"
+	@echo "  make fmt        - format (ruff, prettier)"
+	@echo "  make lint       - lint (ruff, mypy, eslint, hadolint)"
+	@echo "  make clean      - remove volumes (also removes .venv)"
 
 up:
 	docker compose up -d --build
@@ -40,6 +47,18 @@ e2e:
 bench:
 	bash scripts/bench.sh
 
+$(VENV)/bin/activate:
+	python3 -m venv $(VENV)
+	$(PIP) install --upgrade pip
+	$(PIP) install -e apps/backend[dev]
+	$(PIP) install -e apps/worker[dev]
+
+venv: $(VENV)/bin/activate
+	@echo "venv ready: source $(VENV)/bin/activate"
+
+test-local: $(VENV)/bin/activate
+	$(PYTEST) -q tests/integration
+
 test:
 	docker compose exec backend pytest -q
 	cd apps/frontend && pnpm test --if-present
@@ -57,4 +76,4 @@ lint:
 
 clean:
 	docker compose down -v
-	rm -rf .scan-artifacts .feeds-cache
+	rm -rf .scan-artifacts .feeds-cache $(VENV)
