@@ -108,17 +108,21 @@ _REQUIRED_HEADERS = [
 ]
 
 
-def _run_fallback(url: str) -> list[PassiveHit]:
-    try:
-        r = httpx.get(url, timeout=8.0, follow_redirects=True)
-    except httpx.HTTPError as exc:
-        log.info("fallback passive check could not reach %s: %s", url, exc)
-        return []
+def check_response(
+    *,
+    url: str,
+    headers: dict[str, str],
+    cookies: list[dict] | None = None,
+) -> list[PassiveHit]:
+    """Pure header/cookie audit — public entry point for tests.
 
+    `headers` is a case-insensitive name->value dict.
+    `cookies` is a list of {name, secure: bool, httponly: bool} dicts.
+    """
     out: list[PassiveHit] = []
-    headers = {k.lower(): v for k, v in r.headers.items()}
+    headers_l = {k.lower(): v for k, v in headers.items()}
     for name, sev, desc, fix in _REQUIRED_HEADERS:
-        if name.lower() not in headers:
+        if name.lower() not in headers_l:
             out.append(
                 PassiveHit(
                     title=f"Missing security header: {name}",
@@ -129,20 +133,16 @@ def _run_fallback(url: str) -> list[PassiveHit]:
                     cwe_ids=["CWE-693"],
                 )
             )
-
-    # Cookie flag checks
-    for cookie in r.cookies.jar:
+    for cookie in cookies or []:
         flags_missing: list[str] = []
-        if not cookie.secure:
+        if not cookie.get("secure"):
             flags_missing.append("Secure")
-        # Python's cookielib uses `_rest` for HttpOnly
-        rest = getattr(cookie, "_rest", {}) or {}
-        if "HttpOnly" not in {k.title() for k in rest.keys()}:
+        if not cookie.get("httponly"):
             flags_missing.append("HttpOnly")
         if flags_missing:
             out.append(
                 PassiveHit(
-                    title=f"Cookie '{cookie.name}' missing flags: {', '.join(flags_missing)}",
+                    title=f"Cookie '{cookie['name']}' missing flags: {', '.join(flags_missing)}",
                     severity="low",
                     description="Session cookies should be Secure + HttpOnly to limit theft via XSS / network sniffing.",
                     remediation="Set Secure and HttpOnly attributes on all session cookies.",
@@ -150,4 +150,25 @@ def _run_fallback(url: str) -> list[PassiveHit]:
                     cwe_ids=["CWE-1004"],
                 )
             )
+    return out
+
+
+def _run_fallback(url: str) -> list[PassiveHit]:
+    try:
+        r = httpx.get(url, timeout=8.0, follow_redirects=True)
+    except httpx.HTTPError as exc:
+        log.info("fallback passive check could not reach %s: %s", url, exc)
+        return []
+
+    cookies: list[dict] = []
+    for cookie in r.cookies.jar:
+        rest = getattr(cookie, "_rest", {}) or {}
+        cookies.append(
+            {
+                "name": cookie.name,
+                "secure": bool(cookie.secure),
+                "httponly": "HttpOnly" in {k.title() for k in rest.keys()},
+            }
+        )
+    return check_response(url=url, headers=dict(r.headers), cookies=cookies)
     return out

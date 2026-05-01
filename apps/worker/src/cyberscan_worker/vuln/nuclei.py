@@ -70,8 +70,13 @@ def run(
         log.warning("nuclei timed out")
         return []
 
+    return parse(proc.stdout)
+
+
+def parse(jsonl: str) -> list[NucleiHit]:
+    """Parse Nuclei's JSONL output. Public entry point for tests."""
     out: list[NucleiHit] = []
-    for line in proc.stdout.splitlines():
+    for line in jsonl.splitlines():
         line = line.strip()
         if not line:
             continue

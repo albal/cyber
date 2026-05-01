@@ -47,8 +47,13 @@ def run(host: str, top_ports: str = "1000", timeout_s: int = 120) -> list[OpenPo
         log.warning("naabu timed out for %s", host)
         return []
 
+    return parse(proc.stdout, fallback_host=host)
+
+
+def parse(jsonl: str, *, fallback_host: str = "") -> list[OpenPort]:
+    """Parse Naabu's JSONL output. Public entry point for tests."""
     out: list[OpenPort] = []
-    for line in proc.stdout.splitlines():
+    for line in jsonl.splitlines():
         line = line.strip()
         if not line:
             continue
@@ -56,7 +61,7 @@ def run(host: str, top_ports: str = "1000", timeout_s: int = 120) -> list[OpenPo
             row = json.loads(line)
         except json.JSONDecodeError:
             continue
-        h = row.get("host") or row.get("ip") or host
+        h = row.get("host") or row.get("ip") or fallback_host
         port = row.get("port")
         if isinstance(port, int):
             out.append(OpenPort(host=h, port=port))
