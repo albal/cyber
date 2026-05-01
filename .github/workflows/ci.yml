@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-python:
+    name: pytest (backend + worker)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install backend + worker deps (for tests)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e apps/backend[dev]
+          pip install -e apps/worker[dev]
+
+      - name: Run pytest
+        run: pytest -q tests/integration
+
+  build-images:
+    name: docker build (no push)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [backend, worker, frontend]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build ${{ matrix.component }}
+        uses: docker/build-push-action@v6
+        with:
+          context: apps/${{ matrix.component }}
+          push: false
+          load: false
+          cache-from: type=gha,scope=${{ matrix.component }}
+          cache-to: type=gha,scope=${{ matrix.component }},mode=max
+
+  helm-lint:
+    name: helm lint + kubeconform
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+
+      - name: helm dependency update
+        run: |
+          helm repo add bitnami https://charts.bitnami.com/bitnami
+          helm dependency update charts/cyberscan
+
+      - name: helm lint
+        run: helm lint charts/cyberscan
+
+      - name: helm template (smoke render)
+        run: helm template cyberscan charts/cyberscan > /tmp/rendered.yaml
+
+      - name: kubeconform
+        uses: docker://ghcr.io/yannh/kubeconform:latest
+        with:
+          args: -strict -ignore-missing-schemas -summary /tmp/rendered.yaml

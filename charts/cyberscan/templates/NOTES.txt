@@ -1,0 +1,42 @@
+{{ .Chart.Name }} {{ .Chart.Version }} installed in namespace "{{ .Release.Namespace }}".
+
+Components:
+  • frontend     ({{ .Values.frontend.replicas }} replica{{ if ne (int .Values.frontend.replicas) 1 }}s{{ end }})
+  • backend      ({{ .Values.backend.replicas }} replica{{ if ne (int .Values.backend.replicas) 1 }}s{{ end }})
+  • worker pools: recon · vuln · tls · passive · feeds (CronJob: {{ .Values.workers.feeds.schedule }})
+{{- if .Values.postgresql.enabled }}
+  • postgresql   (subchart)
+{{- end }}
+{{- if .Values.redis.enabled }}
+  • redis        (subchart)
+{{- end }}
+{{- if .Values.minio.enabled }}
+  • minio        (subchart)
+{{- end }}
+
+Next steps:
+
+  1. Run database migrations (already executed by the pre-install hook).
+  2. Seed the default tenant + admin user:
+
+       kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "cyberscan.fullname" . }}-backend \
+         -- python -m cyberscan_api.scripts.seed
+
+  3. Seed vulnerability feeds:
+
+       kubectl -n {{ .Release.Namespace }} create job --from=cronjob/{{ include "cyberscan.fullname" . }}-feeds seed-now
+
+{{- if .Values.ingress.enabled }}
+
+  4. Access the UI at: https://{{ .Values.global.domain }}/
+{{- else }}
+
+  4. Port-forward the frontend:
+
+       kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "cyberscan.fullname" . }}-frontend 3000:3000
+
+       Then open: http://localhost:3000
+{{- end }}
+
+For self-hosted deployments behind your own IdP, set keycloak.enabled=false and
+point backend.env.OIDC_ISSUER at your provider.
