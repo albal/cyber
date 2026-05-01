@@ -73,6 +73,45 @@ def test_nist_mapping(cwe: str, expected_nist: str):
     assert expected_nist in tags
 
 
+# ---------- CIS Controls v8 ---------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "cwe,expected_cis",
+    [
+        ("CWE-79", "CIS 16.10"),
+        ("CWE-89", "CIS 16.10"),
+        ("CWE-94", "CIS 16.10"),
+        ("CWE-502", "CIS 16.10"),
+        ("CWE-352", "CIS 6.1"),
+        ("CWE-285", "CIS 6.1"),
+        ("CWE-22",  "CIS 6.1"),
+        ("CWE-287", "CIS 6.5"),
+        ("CWE-200", "CIS 3.1"),
+        ("CWE-918", "CIS 13.10"),
+        ("CWE-310", "CIS 3.10"),
+        ("CWE-319", "CIS 3.10"),
+        ("CWE-327", "CIS 3.10"),
+        ("CWE-693", "CIS 4.1"),
+        ("CWE-1004", "CIS 4.1"),
+    ],
+)
+def test_cis_mapping(cwe: str, expected_cis: str):
+    tags = compliance_tags([cwe])
+    assert expected_cis in tags
+
+
+def test_cis_dedup_when_multiple_cwes_share_a_safeguard():
+    tags = compliance_tags(["CWE-79", "CWE-89", "CWE-94"])
+    assert sum(t == "CIS 16.10" for t in tags) == 1
+
+
+def test_full_framework_coverage_for_xss():
+    tags = compliance_tags(["CWE-79"])
+    for prefix in ("OWASP A03", "PCI-DSS 6.5.7", "CIS 16.10"):
+        assert any(t.startswith(prefix) for t in tags), f"missing {prefix}"
+
+
 # ---------- general behavior --------------------------------------------------
 
 
