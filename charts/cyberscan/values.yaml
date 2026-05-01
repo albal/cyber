@@ -38,27 +38,47 @@ backend:
 workers:
   recon:
     replicas: 1
-    image:
-      name: cyberscan-worker
+    image: { name: cyberscan-worker }
     queues: "recon"
     resources:
       requests: { cpu: 200m, memory: 256Mi }
       limits:   { cpu: 1500m, memory: 1Gi }
   vuln:
     replicas: 1
-    image:
-      name: cyberscan-worker
+    image: { name: cyberscan-worker }
     queues: "vuln"
     resources:
       requests: { cpu: 300m, memory: 512Mi }
       limits:   { cpu: 2000m, memory: 2Gi }
+  tls:
+    replicas: 1
+    image: { name: cyberscan-worker }
+    queues: "tls"
+    resources:
+      requests: { cpu: 100m, memory: 256Mi }
+      limits:   { cpu: 500m, memory: 512Mi }
+  passive:
+    replicas: 1
+    image: { name: cyberscan-worker }
+    queues: "passive"
+    resources:
+      requests: { cpu: 200m, memory: 512Mi }
+      limits:   { cpu: 1000m, memory: 1500Mi }   # ZAP is heavy
   feeds:
     schedule: "0 */6 * * *"
-    image:
-      name: cyberscan-worker
+    image: { name: cyberscan-worker }
     resources:
       requests: { cpu: 100m, memory: 256Mi }
       limits:   { cpu: 500m, memory: 1Gi }
+
+notifications:
+  smtp:
+    host: ""
+    port: 587
+    user: ""
+    password: ""
+    from: "cyberscan@example.com"
+    starttls: true
 
 ingress:
   enabled: false

@@ -46,18 +46,42 @@ class Severity(str, enum.Enum):
     info = "info"
 
 
+class Role(str, enum.Enum):
+    owner = "owner"
+    admin = "admin"
+    analyst = "analyst"
+    viewer = "viewer"
+
+
+class Tenant(Base):
+    __tablename__ = "tenants"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    slug: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class User(Base):
     __tablename__ = "users"
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id"), index=True, nullable=False
+    )
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
-    is_admin: Mapped[bool] = mapped_column(default=True)
+    role: Mapped[Role] = mapped_column(
+        Enum(Role, name="role"), default=Role.viewer, nullable=False
+    )
+    is_admin: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class Asset(Base):
     __tablename__ = "assets"
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id"), index=True, nullable=False
+    )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     target_url: Mapped[str] = mapped_column(String(2048), nullable=False)
     hostname: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
@@ -80,6 +104,9 @@ class Asset(Base):
 class Scan(Base):
     __tablename__ = "scans"
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id"), index=True, nullable=False
+    )
     asset_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("assets.id"), index=True)
     status: Mapped[ScanStatus] = mapped_column(
         Enum(ScanStatus, name="scan_status"), default=ScanStatus.queued, nullable=False
@@ -103,6 +130,9 @@ class Scan(Base):
 class Finding(Base):
     __tablename__ = "findings"
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id"), index=True, nullable=False
+    )
     scan_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("scans.id"), index=True)
     asset_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("assets.id"), index=True)
 
@@ -126,6 +156,7 @@ class Finding(Base):
 
     diff_status: Mapped[str | None] = mapped_column(String(16), nullable=True)  # new|fixed|unchanged
     dedupe_key: Mapped[str] = mapped_column(String(128), index=True)
+    source: Mapped[str] = mapped_column(String(32), default="nuclei")  # nuclei|sslyze|zap|...
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -135,10 +166,30 @@ class Finding(Base):
 class AuditLog(Base):
     __tablename__ = "audit_log"
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), index=True, nullable=True
+    )
     actor_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     actor_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
     action: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     target_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
     target_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     details: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class NotificationChannel(Base):
+    """Per-tenant notification target. v0.2: email | slack | teams."""
+
+    __tablename__ = "notification_channels"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id"), index=True, nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)  # email|slack|teams
+    target: Mapped[str] = mapped_column(String(2048), nullable=False)  # email addr or webhook url
+    enabled: Mapped[bool] = mapped_column(default=True)
+    min_severity: Mapped[Severity] = mapped_column(
+        Enum(Severity, name="severity"), default=Severity.high, nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

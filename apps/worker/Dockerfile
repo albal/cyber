@@ -11,6 +11,7 @@ ARG TARGETARCH=amd64
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl unzip libpcap-dev \
+      build-essential libffi-dev libssl-dev \
     && rm -rf /var/lib/apt/lists/* \
     && set -eux; \
        cd /tmp; \

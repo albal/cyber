@@ -1,30 +1,34 @@
-"""End-to-end scan pipeline (v0.1: single task, sequential stages).
+"""End-to-end scan pipeline.
 
-Stages later split into Celery chord/chain (v0.2). For MVP we keep one
-`run_scan` task so progress reporting is straightforward.
+v0.1: single task, recon -> nuclei -> consolidate.
+v0.2: adds TLS (sslyze) + passive (ZAP/header fallback) stages run alongside
+      vuln, EPSS enrichment, tenant-aware persistence, and notifications.
 """
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from datetime import UTC, datetime
 from urllib.parse import urlparse
 
-from sqlalchemy import select, text
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from cyberscan_worker.celery_app import celery_app
+from cyberscan_worker.compliance import compliance_tags as _compliance_tags
 from cyberscan_worker.config import get_settings
 from cyberscan_worker.db import SessionLocal
+from cyberscan_worker.feeds import epss
 from cyberscan_worker.feeds.store import get_cve, is_kev
+from cyberscan_worker.notify.dispatcher import ScanSummary, dispatch
+from cyberscan_worker.passive import zap_baseline
 from cyberscan_worker.recon import httpx_probe, naabu
 from cyberscan_worker.risk import RiskInputs, composite_score, dedupe_key, severity_for
+from cyberscan_worker.tls import sslyze_runner
 from cyberscan_worker.vuln import nuclei
 
 log = logging.getLogger(__name__)
-
-
-# ---- raw SQL helpers (decoupling worker from backend ORM) -------------------
 
 _UPDATE_SCAN_SQL = text(
     """
@@ -43,20 +47,28 @@ _UPDATE_SCAN_SQL = text(
 _INSERT_FINDING_SQL = text(
     """
     INSERT INTO findings (
-        id, scan_id, asset_id, title, template_id, cve_ids, cwe_ids, severity,
+        id, tenant_id, scan_id, asset_id, title, template_id, cve_ids, cwe_ids, severity,
         cvss_score, epss_score, is_kev, risk_score, location, matcher_name,
         request, response_excerpt, remediation, "references", compliance_tags,
-        diff_status, dedupe_key
+        diff_status, dedupe_key, source
     ) VALUES (
-        :id, :scan_id, :asset_id, :title, :template_id,
+        :id, :tenant_id, :scan_id, :asset_id, :title, :template_id,
         CAST(:cve_ids AS json), CAST(:cwe_ids AS json), CAST(:severity AS severity),
         :cvss_score, :epss_score, :is_kev, :risk_score, :location, :matcher_name,
         :request, :response_excerpt, :remediation,
         CAST(:references AS json), CAST(:compliance_tags AS json),
-        :diff_status, :dedupe_key
+        :diff_status, :dedupe_key, :source
     )
     """
 )
+
+
+def _set_tenant(db: Session, tenant_id: str) -> None:
+    """Pin the per-session GUC so RLS policies allow tenant-scoped reads/writes."""
+    if tenant_id:
+        db.execute(text("SET LOCAL app.tenant_id = :tid"), {"tid": tenant_id})
+    else:
+        db.execute(text("SET LOCAL app.tenant_id = ''"))
 
 
 def _set_state(
@@ -71,8 +83,6 @@ def _set_state(
     error: str | None = None,
     summary: dict | None = None,
 ) -> None:
-    import json as _json
-
     db.execute(
         _UPDATE_SCAN_SQL,
         {
@@ -83,17 +93,21 @@ def _set_state(
             "started_at": started_at,
             "finished_at": finished_at,
             "error": error,
-            "summary": _json.dumps(summary) if summary is not None else None,
+            "summary": json.dumps(summary) if summary is not None else None,
         },
     )
     db.commit()
 
 
-def _load_asset(db: Session, scan_id: str) -> tuple[str, str, str]:
+def _load_scan_meta(db: Session, scan_id: str) -> tuple[str, str, str, str, str]:
     row = db.execute(
         text(
             """
-            SELECT a.id::text AS asset_id, a.target_url, a.hostname
+            SELECT s.tenant_id::text AS tenant_id,
+                   a.id::text AS asset_id,
+                   a.name AS asset_name,
+                   a.target_url,
+                   a.hostname
               FROM scans s JOIN assets a ON a.id = s.asset_id
              WHERE s.id = :id
             """
@@ -102,7 +116,7 @@ def _load_asset(db: Session, scan_id: str) -> tuple[str, str, str]:
     ).first()
     if not row:
         raise RuntimeError(f"scan {scan_id} not found")
-    return row.asset_id, row.target_url, row.hostname
+    return row.tenant_id, row.asset_id, row.asset_name, row.target_url, row.hostname
 
 
 def _previous_dedupe_keys(db: Session, asset_id: str, current_scan_id: str) -> set[str]:
@@ -126,12 +140,17 @@ def _previous_dedupe_keys(db: Session, asset_id: str, current_scan_id: str) -> s
 
 
 @celery_app.task(name="cyberscan_worker.pipeline.run_scan", queue="recon", bind=True)
-def run_scan(self, scan_id: str) -> dict:  # type: ignore[no-untyped-def]
+def run_scan(self, scan_id: str, tenant_id: str | None = None) -> dict:  # type: ignore[no-untyped-def]
     s = get_settings()
-    log.info("run_scan start scan_id=%s", scan_id)
+    log.info("run_scan start scan_id=%s tenant_id=%s", scan_id, tenant_id)
 
     with SessionLocal() as db:
-        asset_id, target_url, hostname = _load_asset(db, scan_id)
+        # First load happens with admin GUC so we can read scans across tenants.
+        _set_tenant(db, "")
+        meta_tenant, asset_id, asset_name, target_url, hostname = _load_scan_meta(db, scan_id)
+        tid = tenant_id or meta_tenant
+        _set_tenant(db, tid)
+
         _set_state(
             db, scan_id,
             status="running", stage="recon", progress=5,
@@ -141,37 +160,99 @@ def run_scan(self, scan_id: str) -> dict:  # type: ignore[no-untyped-def]
         try:
             # Stage 1: port discovery + service fingerprint
             ports = naabu.run(hostname, top_ports="1000", timeout_s=120)
-            _set_state(db, scan_id, status="running", stage="recon", progress=20)
+            _set_state(db, scan_id, status="running", stage="recon", progress=15)
 
             host_port_targets = [f"{p.host}:{p.port}" for p in ports]
-            # Always include the original URL host as a fallback target
             services = httpx_probe.run(host_port_targets or [hostname], timeout_s=120)
             if not services:
-                # MVP: at minimum probe the asset URL itself
                 services = httpx_probe.run([target_url], timeout_s=60)
 
-            _set_state(db, scan_id, status="running", stage="vuln", progress=40)
+            _set_state(db, scan_id, status="running", stage="vuln", progress=30)
 
-            # Stage 2: nuclei (sharded)
+            # Stage 2a: nuclei (sharded)
             urls = [svc.url for svc in services] or [target_url]
             shards = nuclei.shard(urls, s.nuclei_shards)
             all_hits: list[nuclei.NucleiHit] = []
             for i, bucket in enumerate(shards):
-                progress = 40 + int(40 * (i + 1) / max(len(shards), 1))
+                progress = 30 + int(30 * (i + 1) / max(len(shards), 1))
                 _set_state(db, scan_id, status="running", stage=f"vuln/shard{i+1}", progress=progress)
                 all_hits.extend(nuclei.run(bucket, timeout_s=600))
 
-            _set_state(db, scan_id, status="running", stage="consolidate", progress=85)
+            # Stage 2b: TLS deep inspection on each TLS endpoint
+            _set_state(db, scan_id, status="running", stage="tls", progress=70)
+            tls_hits: list[sslyze_runner.TlsHit] = []
+            tls_targets = {(p.host, p.port) for p in ports if p.port in (443, 8443)} or {(hostname, 443)}
+            for host, port in tls_targets:
+                tls_hits.extend(sslyze_runner.run(host, port=port, timeout_s=60))
+
+            # Stage 2c: passive (ZAP baseline / fallback header check)
+            _set_state(db, scan_id, status="running", stage="passive", progress=80)
+            passive_hits: list[zap_baseline.PassiveHit] = []
+            passive_targets = list({svc.url for svc in services if svc.url.startswith("http")})
+            if not passive_targets:
+                passive_targets = [target_url]
+            for url in passive_targets[:3]:  # cap fan-out for the 15-min SLA
+                passive_hits.extend(zap_baseline.run(url, timeout_s=300))
+
+            _set_state(db, scan_id, status="running", stage="consolidate", progress=90)
 
             # Stage 3: enrich + score + persist
             prev_keys = _previous_dedupe_keys(db, asset_id, scan_id)
             current_keys: set[str] = set()
             findings_summary: dict[str, int] = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
+            top: list[tuple[str, str, float, list[str]]] = []
 
+            def _persist(
+                *, source: str, title: str, sev: str, risk: float,
+                template_id: str | None, cve_ids: list[str], cwe_ids: list[str],
+                cvss_score: float | None, epss_pct: float | None, is_kev_flag: bool,
+                location: str | None, matcher_name: str | None,
+                request: str | None, response_excerpt: str | None,
+                remediation: str | None, references: list[str],
+                compliance_tags: list[str],
+            ) -> None:
+                key = dedupe_key(
+                    asset_id=asset_id, template_id=template_id,
+                    cve_ids=cve_ids, location=location,
+                )
+                current_keys.add(key)
+                diff = "new" if key not in prev_keys else "unchanged"
+                findings_summary[sev] = findings_summary.get(sev, 0) + 1
+                top.append((title, sev, risk, cve_ids))
+                db.execute(
+                    _INSERT_FINDING_SQL,
+                    {
+                        "id": str(uuid.uuid4()),
+                        "tenant_id": tid,
+                        "scan_id": scan_id,
+                        "asset_id": asset_id,
+                        "title": title,
+                        "template_id": template_id,
+                        "cve_ids": json.dumps(cve_ids),
+                        "cwe_ids": json.dumps(cwe_ids),
+                        "severity": sev,
+                        "cvss_score": cvss_score,
+                        "epss_score": epss_pct,
+                        "is_kev": is_kev_flag,
+                        "risk_score": round(risk, 2),
+                        "location": location,
+                        "matcher_name": matcher_name,
+                        "request": request,
+                        "response_excerpt": response_excerpt,
+                        "remediation": remediation,
+                        "references": json.dumps(references),
+                        "compliance_tags": json.dumps(compliance_tags),
+                        "diff_status": diff,
+                        "dedupe_key": key,
+                        "source": source,
+                    },
+                )
+
+            # Nuclei findings
             for hit in all_hits:
                 cvss = hit.cvss_score
                 kev_flag = False
-                # Take the highest-severity CVE for scoring
+                epss_pct: float | None = None
                 for cve in hit.cve_ids:
                     cve_row = get_cve(db, cve)
                     if cve_row and cve_row.get("cvss_v3"):
@@ -179,72 +260,104 @@ def run_scan(self, scan_id: str) -> dict:  # type: ignore[no-untyped-def]
                             cvss = float(cve_row["cvss_v3"])
                     if is_kev(db, cve):
                         kev_flag = True
+                    e = epss.lookup(db, cve)
+                    if e and (epss_pct is None or e[1] > epss_pct):
+                        epss_pct = e[1]
 
-                exposure = "internet"  # MVP assumption
                 inputs = RiskInputs(
                     cvss=cvss,
-                    epss_percentile=None,  # v0.2 adds EPSS
+                    epss_percentile=epss_pct,
                     is_kev=kev_flag,
-                    exposure=exposure,
+                    exposure="internet",
                     exploit_available="public" if kev_flag else "none",
                 )
                 score = composite_score(inputs)
-                # Honor nuclei's severity if no CVSS at all (template-only finding)
-                sev = severity_for(score, is_kev=kev_flag) if cvss is not None or kev_flag else hit.severity
-                findings_summary[sev] = findings_summary.get(sev, 0) + 1
-
-                key = dedupe_key(
-                    asset_id=asset_id,
+                sev = severity_for(score, is_kev=kev_flag) if (cvss is not None or kev_flag) else hit.severity
+                _persist(
+                    source="nuclei",
+                    title=hit.name,
+                    sev=sev,
+                    risk=score,
                     template_id=hit.template_id,
                     cve_ids=hit.cve_ids,
+                    cwe_ids=hit.cwe_ids,
+                    cvss_score=cvss,
+                    epss_pct=epss_pct,
+                    is_kev_flag=kev_flag,
                     location=hit.matched_at,
+                    matcher_name=hit.matcher_name,
+                    request=hit.request,
+                    response_excerpt=hit.response_excerpt,
+                    remediation=hit.remediation,
+                    references=hit.references,
+                    compliance_tags=_compliance_tags(hit.cwe_ids),
                 )
-                current_keys.add(key)
-                diff = "new" if key not in prev_keys else "unchanged"
 
-                import json as _json
-                db.execute(
-                    _INSERT_FINDING_SQL,
-                    {
-                        "id": str(uuid.uuid4()),
-                        "scan_id": scan_id,
-                        "asset_id": asset_id,
-                        "title": hit.name,
-                        "template_id": hit.template_id,
-                        "cve_ids": _json.dumps(hit.cve_ids),
-                        "cwe_ids": _json.dumps(hit.cwe_ids),
-                        "severity": sev,
-                        "cvss_score": cvss,
-                        "epss_score": None,
-                        "is_kev": kev_flag,
-                        "risk_score": round(score, 2),
-                        "location": hit.matched_at,
-                        "matcher_name": hit.matcher_name,
-                        "request": hit.request,
-                        "response_excerpt": hit.response_excerpt,
-                        "remediation": hit.remediation,
-                        "references": _json.dumps(hit.references),
-                        "compliance_tags": _json.dumps(_compliance_tags(hit.cwe_ids)),
-                        "diff_status": diff,
-                        "dedupe_key": key,
-                    },
+            # TLS findings
+            for th in tls_hits:
+                # No CVSS for these in v0.2 — score off severity floor.
+                sev = th.severity
+                # rough numeric per band so risk_score is meaningful in the UI
+                risk = {"critical": 90.0, "high": 75.0, "medium": 55.0, "low": 25.0, "info": 5.0}[sev]
+                _persist(
+                    source="sslyze",
+                    title=th.title,
+                    sev=sev,
+                    risk=risk,
+                    template_id=None,
+                    cve_ids=[],
+                    cwe_ids=th.cwe_ids,
+                    cvss_score=None,
+                    epss_pct=None,
+                    is_kev_flag=False,
+                    location=th.target,
+                    matcher_name=None,
+                    request=None,
+                    response_excerpt=None,
+                    remediation=th.remediation,
+                    references=th.references,
+                    compliance_tags=_compliance_tags(th.cwe_ids),
                 )
+
+            # Passive (ZAP / fallback) findings
+            for ph in passive_hits:
+                sev = ph.severity
+                risk = {"critical": 90.0, "high": 75.0, "medium": 55.0, "low": 25.0, "info": 5.0}.get(sev, 5.0)
+                _persist(
+                    source="zap",
+                    title=ph.title,
+                    sev=sev,
+                    risk=risk,
+                    template_id=None,
+                    cve_ids=[],
+                    cwe_ids=ph.cwe_ids,
+                    cvss_score=None,
+                    epss_pct=None,
+                    is_kev_flag=False,
+                    location=ph.target,
+                    matcher_name=None,
+                    request=None,
+                    response_excerpt=None,
+                    remediation=ph.remediation,
+                    references=ph.references,
+                    compliance_tags=_compliance_tags(ph.cwe_ids),
+                )
+
             db.commit()
 
-            # Synthesize "fixed" findings for items present last scan but missing now
+            # Synthesize "fixed" markers for items present last scan but missing now
             for key in (prev_keys - current_keys):
-                # Lightweight marker row: title only; UI shows them as fixed.
-                import json as _json
                 db.execute(
                     _INSERT_FINDING_SQL,
                     {
                         "id": str(uuid.uuid4()),
+                        "tenant_id": tid,
                         "scan_id": scan_id,
                         "asset_id": asset_id,
                         "title": "(previously detected, no longer present)",
                         "template_id": None,
-                        "cve_ids": _json.dumps([]),
-                        "cwe_ids": _json.dumps([]),
+                        "cve_ids": json.dumps([]),
+                        "cwe_ids": json.dumps([]),
                         "severity": "info",
                         "cvss_score": None,
                         "epss_score": None,
@@ -255,10 +368,11 @@ def run_scan(self, scan_id: str) -> dict:  # type: ignore[no-untyped-def]
                         "request": None,
                         "response_excerpt": None,
                         "remediation": None,
-                        "references": _json.dumps([]),
-                        "compliance_tags": _json.dumps([]),
+                        "references": json.dumps([]),
+                        "compliance_tags": json.dumps([]),
                         "diff_status": "fixed",
                         "dedupe_key": key,
+                        "source": "diff",
                     },
                 )
             db.commit()
@@ -266,6 +380,8 @@ def run_scan(self, scan_id: str) -> dict:  # type: ignore[no-untyped-def]
             summary = {
                 "ports_open": len(ports),
                 "services_seen": len(services),
+                "tls_findings": len(tls_hits),
+                "passive_findings": len(passive_hits),
                 "findings": findings_summary,
                 "new": sum(1 for k in current_keys if k not in prev_keys),
                 "fixed": len(prev_keys - current_keys),
@@ -276,6 +392,26 @@ def run_scan(self, scan_id: str) -> dict:  # type: ignore[no-untyped-def]
                 status="completed", stage="done", progress=100,
                 finished_at=datetime.now(UTC), summary=summary,
             )
+
+            # Notifications (best-effort; failures don't fail the scan)
+            top.sort(key=lambda t: t[2], reverse=True)
+            try:
+                dispatch(
+                    db,
+                    tenant_id=tid,
+                    summary=ScanSummary(
+                        scan_id=scan_id,
+                        asset_name=asset_name,
+                        target_url=target_url,
+                        counts=findings_summary,
+                        new=summary["new"],
+                        fixed=summary["fixed"],
+                        top_findings=top[:5],
+                    ),
+                )
+            except Exception:  # noqa: BLE001
+                log.exception("notification dispatch failed (non-fatal)")
+
             log.info("run_scan done scan_id=%s summary=%s", scan_id, summary)
             return summary
 
@@ -289,27 +425,4 @@ def run_scan(self, scan_id: str) -> dict:  # type: ignore[no-untyped-def]
             raise
 
 
-# ---- compliance tagging (CWE -> framework chips) ----------------------------
-
-# Trimmed v0.1 mapping; expanded set lives in packages/compliance-map/data.
-_OWASP_BY_CWE = {
-    "CWE-79": "OWASP A03:2021 Injection",
-    "CWE-89": "OWASP A03:2021 Injection",
-    "CWE-94": "OWASP A03:2021 Injection",
-    "CWE-352": "OWASP A01:2021 Broken Access Control",
-    "CWE-285": "OWASP A01:2021 Broken Access Control",
-    "CWE-287": "OWASP A07:2021 Identification & Authentication Failures",
-    "CWE-200": "OWASP A04:2021 Insecure Design",
-    "CWE-22": "OWASP A01:2021 Broken Access Control",
-    "CWE-918": "OWASP A10:2021 SSRF",
-    "CWE-502": "OWASP A08:2021 Software & Data Integrity",
-}
-
-
-def _compliance_tags(cwe_ids: list[str]) -> list[str]:
-    tags: list[str] = []
-    for c in cwe_ids:
-        c_up = c.upper()
-        if c_up in _OWASP_BY_CWE:
-            tags.append(_OWASP_BY_CWE[c_up])
-    return tags
+# compliance tagging now lives in cyberscan_worker.compliance (pure-python module)
