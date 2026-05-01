@@ -1,13 +1,16 @@
 import uuid
+from collections.abc import Callable
 
 import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from cyberscan_api.core.db import get_db
+from cyberscan_api.core.roles import RANK as _RANK
 from cyberscan_api.core.security import decode_token
-from cyberscan_api.models import User
+from cyberscan_api.models import Role, User
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
@@ -29,4 +32,18 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     user = db.get(User, user_id)
     if not user:
         raise creds_exc
+    # Pin the per-session GUC so RLS scopes every subsequent query to this tenant.
+    db.execute(text("SET LOCAL app.tenant_id = :tid"), {"tid": str(user.tenant_id)})
     return user
+
+
+def require_role(min_role: Role) -> Callable[[User], User]:
+    def _check(user: User = Depends(get_current_user)) -> User:
+        if _RANK[user.role] < _RANK[min_role]:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"requires role >= {min_role.value}",
+            )
+        return user
+
+    return _check

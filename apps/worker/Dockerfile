@@ -11,6 +11,7 @@ ARG TARGETARCH=amd64
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl unzip libpcap-dev \
+      build-essential libffi-dev libssl-dev \
     && rm -rf /var/lib/apt/lists/* \
     && set -eux; \
        cd /tmp; \
@@ -26,7 +27,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY src ./src
 COPY pyproject.toml ./
 RUN pip install --upgrade pip && pip install -e .[dev]
-
 
 # Pre-fetch nuclei templates at build time (cached layer)
 RUN nuclei -update-templates -silent || true

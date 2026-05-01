@@ -19,6 +19,14 @@ class Settings(BaseSettings):
     nvd_api_key: str = Field(default="")
     feeds_use_fixtures: bool = Field(default=True)
 
+    # Notifications
+    smtp_host: str = Field(default="")
+    smtp_port: int = Field(default=587)
+    smtp_user: str = Field(default="")
+    smtp_password: str = Field(default="")
+    smtp_from: str = Field(default="cyberscan@example.com")
+    smtp_starttls: bool = Field(default=True)
+
 
 @lru_cache
 def get_settings() -> Settings:

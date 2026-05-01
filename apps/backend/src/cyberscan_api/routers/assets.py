@@ -6,10 +6,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from cyberscan_api.core.db import get_db
-from cyberscan_api.models import Asset, AuditLog, User, VerificationStatus
+from cyberscan_api.models import Asset, AuditLog, Role, User, VerificationStatus
 from cyberscan_api.schemas import AssetCreate, AssetOut, VerificationInstructions
 from cyberscan_api.services import verification
-from cyberscan_api.services.auth_dep import get_current_user
+from cyberscan_api.services.auth_dep import get_current_user, require_role
 
 router = APIRouter(prefix="/api/v1/assets", tags=["assets"])
 
@@ -23,11 +23,12 @@ def list_assets(db: Session = Depends(get_db), user: User = Depends(get_current_
 def create_asset(
     payload: AssetCreate,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role(Role.analyst)),
 ) -> Asset:
     target_url = str(payload.target_url)
     hostname = verification.hostname_from_url(target_url)
     asset = Asset(
+        tenant_id=user.tenant_id,
         name=payload.name,
         target_url=target_url,
         hostname=hostname,
@@ -39,6 +40,7 @@ def create_asset(
     db.add(asset)
     db.add(
         AuditLog(
+            tenant_id=user.tenant_id,
             actor_user_id=user.id,
             action="asset.create",
             target_type="asset",
@@ -85,7 +87,7 @@ def get_verification_instructions(
 def run_verification(
     asset_id: uuid.UUID,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role(Role.analyst)),
 ) -> Asset:
     asset = db.get(Asset, asset_id)
     if not asset:
@@ -101,6 +103,7 @@ def run_verification(
         asset.verified_at = datetime.now(UTC)
     db.add(
         AuditLog(
+            tenant_id=user.tenant_id,
             actor_user_id=user.id,
             action="asset.verify",
             target_type="asset",

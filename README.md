@@ -13,6 +13,15 @@ Paste a URL, prove you own it, and get a prioritized list of findings — CVE-en
 - Frontend: Next.js. Backend: FastAPI. Queue: Redis+Celery. DB: PostgreSQL. Storage: MinIO.
 - Local dev: docker-compose with OWASP Juice Shop as a pre-wired test target.
 
+## v0.2 — Enterprise foundations (in progress on `v0.2-enterprise` branch)
+
+- **Multi-tenant**: tenants table; `tenant_id` on assets / scans / findings / audit log; Postgres RLS scoped via `app.tenant_id` GUC.
+- **RBAC**: `owner` > `admin` > `analyst` > `viewer`; enforced via `require_role()` on write endpoints.
+- **More scanners**: `sslyze` for TLS deep inspection, ZAP baseline (with a built-in fallback header check when ZAP isn't on PATH).
+- **EPSS** ingestion + lookup feeds the composite risk score.
+- **Notifications**: Email (SMTP) + Slack incoming webhook + MS Teams webhook with per-channel `min_severity` filter.
+- **Helm**: per-pool worker deployments (`recon`, `vuln`, `tls`, `passive`, `feeds`).
+
 ## Quick start (local)
 
 ```bash

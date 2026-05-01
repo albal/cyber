@@ -17,7 +17,9 @@ class LoginRequest(BaseModel):
 class UserOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: uuid.UUID
+    tenant_id: uuid.UUID
     email: EmailStr
+    role: str
     is_admin: bool
 
 
@@ -85,3 +87,21 @@ class FindingOut(BaseModel):
     references: list[str]
     compliance_tags: list[str]
     diff_status: str | None
+    source: str
+
+
+class NotificationChannelCreate(BaseModel):
+    kind: str = Field(pattern="^(email|slack|teams)$")
+    target: str = Field(min_length=1, max_length=2048)
+    min_severity: str = Field(default="high", pattern="^(critical|high|medium|low|info)$")
+    enabled: bool = True
+
+
+class NotificationChannelOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: uuid.UUID
+    kind: str
+    target: str
+    min_severity: str
+    enabled: bool
+    created_at: datetime
