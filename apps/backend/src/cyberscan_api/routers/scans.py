@@ -102,7 +102,7 @@ async def scan_progress_ws(websocket: WebSocket, scan_id: uuid.UUID) -> None:
             with SessionLocal() as db:
                 # No tenant GUC here — the websocket is read-only on a single id
                 # and the user has already authenticated to obtain the scan_id.
-                db.execute(text("SET LOCAL app.tenant_id = ''"))
+                db.execute(text("SELECT set_config('app.tenant_id', '', true)"))
                 scan = db.get(Scan, scan_id)
                 if not scan:
                     await websocket.send_json({"error": "scan not found"})

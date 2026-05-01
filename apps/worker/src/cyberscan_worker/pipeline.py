@@ -64,11 +64,15 @@ _INSERT_FINDING_SQL = text(
 
 
 def _set_tenant(db: Session, tenant_id: str) -> None:
-    """Pin the per-session GUC so RLS policies allow tenant-scoped reads/writes."""
-    if tenant_id:
-        db.execute(text("SET LOCAL app.tenant_id = :tid"), {"tid": tenant_id})
-    else:
-        db.execute(text("SET LOCAL app.tenant_id = ''"))
+    """Pin the per-session GUC so RLS policies allow tenant-scoped reads/writes.
+
+    Postgres SET doesn't accept bind parameters; set_config('...', value, true)
+    is the parameter-friendly equivalent of SET LOCAL.
+    """
+    db.execute(
+        text("SELECT set_config('app.tenant_id', :tid, true)"),
+        {"tid": tenant_id or ""},
+    )
 
 
 def _set_state(

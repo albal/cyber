@@ -1,6 +1,12 @@
 "use client";
 
-const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+// Default to relative URLs so requests go to the Next.js server, which
+// proxies /api/* to the backend (see next.config.ts rewrites). This avoids
+// CORS entirely and removes a class of "Failed to fetch" issues caused by
+// browsers, extensions, or hosts/networks that mishandle cross-origin
+// localhost requests. Set NEXT_PUBLIC_API_URL to opt out (e.g., when the
+// frontend is built without a co-located proxy).
+const BASE = process.env.NEXT_PUBLIC_API_URL ?? "";
 
 export function token(): string | null {
   if (typeof window === "undefined") return null;
@@ -16,17 +22,34 @@ export async function api<T = unknown>(
   path: string,
   init: RequestInit = {},
 ): Promise<T> {
-  const r = await fetch(`${BASE}${path}`, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...authHeaders(),
-      ...(init.headers ?? {}),
-    },
-  });
+  const url = `${BASE}${path}`;
+  const method = (init.method ?? "GET").toUpperCase();
+  let r: Response;
+  try {
+    // Only set Content-Type when there's a body. Adding it on GET requests
+    // unnecessarily promotes them to "non-simple" CORS, which forces a
+    // preflight and is a common cause of mysterious "Failed to fetch" errors
+    // when the preflight is rejected.
+    const headers: Record<string, string> = { ...authHeaders() } as Record<string, string>;
+    if (init.body != null) headers["Content-Type"] = "application/json";
+    Object.assign(headers, init.headers ?? {});
+
+    r = await fetch(url, { ...init, headers });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "fetch failed";
+    // Helpful for the user opening DevTools — they'll see the underlying error.
+    // eslint-disable-next-line no-console
+    console.error(`[api] ${method} ${url} — network error:`, e);
+    throw new Error(
+      `network error contacting ${BASE} (${method} ${path}): ${msg}. ` +
+        `Check that the backend is up (curl ${BASE}/healthz) and CORS is configured.`,
+    );
+  }
   if (!r.ok) {
     const text = await r.text().catch(() => "");
-    throw new Error(`${r.status} ${r.statusText}: ${text}`);
+    // eslint-disable-next-line no-console
+    console.error(`[api] ${method} ${url} -> ${r.status} ${r.statusText}`, text);
+    throw new Error(`${r.status} ${r.statusText}${text ? `: ${text}` : ""}`);
   }
   if (r.status === 204) return undefined as T;
   return (await r.json()) as T;
@@ -36,12 +59,24 @@ export async function login(email: string, password: string): Promise<string> {
   const body = new URLSearchParams();
   body.set("username", email);
   body.set("password", password);
-  const r = await fetch(`${BASE}/api/v1/auth/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body,
-  });
-  if (!r.ok) throw new Error("invalid credentials");
+  let r: Response;
+  try {
+    r = await fetch(`${BASE}/api/v1/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body,
+    });
+  } catch (e) {
+    throw new Error(
+      `network error contacting ${BASE} — is the backend reachable from your browser? (${
+        e instanceof Error ? e.message : "fetch failed"
+      })`,
+    );
+  }
+  if (!r.ok) {
+    const text = await r.text().catch(() => "");
+    throw new Error(`${r.status} ${r.statusText}${text ? `: ${text}` : ""}`);
+  }
   const data = (await r.json()) as { access_token: string };
   window.localStorage.setItem("cyberscan_token", data.access_token);
   return data.access_token;
