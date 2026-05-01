@@ -23,7 +23,7 @@ from cyberscan_worker.feeds import epss
 from cyberscan_worker.feeds.store import get_cve, is_kev
 from cyberscan_worker.notify.dispatcher import ScanSummary, dispatch
 from cyberscan_worker.passive import zap_baseline
-from cyberscan_worker.recon import httpx_probe, naabu
+from cyberscan_worker.recon import httpx_probe, katana, naabu
 from cyberscan_worker.risk import RiskInputs, composite_score, dedupe_key, severity_for
 from cyberscan_worker.tls import sslyze_runner
 from cyberscan_worker.vuln import nuclei
@@ -173,24 +173,51 @@ def run_scan(  # type: ignore[no-untyped-def]
             if not services:
                 services = httpx_probe.run([target_url], timeout_s=60)
 
+            # Stage 1b: crawl. Without this Nuclei only ever hits the homepage,
+            # which on SPAs (Angular/React) misses every API endpoint. Katana
+            # walks links, parses JS bundles + source maps, and follows
+            # known-files (robots.txt, sitemap.xml).
+            _set_state(db, scan_id, status="running", stage="crawl", progress=22)
+            crawl_seeds = [svc.url for svc in services if svc.url.startswith("http")] or [target_url]
+            depth = s.crawl_depth_intrusive if intrusive else s.crawl_depth
+            crawled = katana.run(
+                crawl_seeds,
+                depth=depth,
+                max_urls=s.crawl_max_urls,
+                timeout_s=s.crawl_timeout_s,
+            )
+            log.info("crawl: %d url(s) discovered (seeds=%d)", len(crawled), len(crawl_seeds))
+
             _set_state(db, scan_id, status="running", stage="vuln", progress=30)
 
-            # Stage 2a: nuclei (sharded). Intrusive mode lifts the severity
-            # filter and enables intrusive templates (brute-force, fuzzing).
-            urls = [svc.url for svc in services] or [target_url]
+            # Stage 2a: nuclei (sharded). Default tag set covers CVEs, exposures,
+            # misconfigs, default logins, exposed tokens / panels, JS-file analysis.
+            # Intrusive mode adds -as (automatic scan: enables fuzz / brute / dast).
+            urls = [c.url for c in crawled] or [target_url]
             shards = nuclei.shard(urls, s.nuclei_shards)
             all_hits: list[nuclei.NucleiHit] = []
-            extra_args = ["-as"] if intrusive else None  # -as: automatic scan, includes intrusive
-            severities = (
-                ("critical", "high", "medium", "low", "info")
-                if intrusive
-                else ("critical", "high", "medium", "low")
-            )
+            severities = ("critical", "high", "medium", "low", "info")
+            if intrusive:
+                # -as enables the full template set (fuzz, intrusive, dast).
+                extra_args = ["-as"]
+                tags: tuple[str, ...] = ()  # let -as drive selection
+            else:
+                extra_args = None
+                tags = (
+                    "cve", "exposure", "misconfig", "tech", "exposed-panel",
+                    "default-login", "exposed-tokens", "js", "config",
+                )
             for i, bucket in enumerate(shards):
                 progress = 30 + int(30 * (i + 1) / max(len(shards), 1))
                 _set_state(db, scan_id, status="running", stage=f"vuln/shard{i+1}", progress=progress)
                 all_hits.extend(
-                    nuclei.run(bucket, severities=severities, extra_args=extra_args, timeout_s=600)
+                    nuclei.run(
+                        bucket,
+                        severities=severities,
+                        tags=tags,
+                        extra_args=extra_args,
+                        timeout_s=900 if intrusive else 600,
+                    )
                 )
 
             # Stage 2b: TLS deep inspection on each TLS endpoint
@@ -397,6 +424,7 @@ def run_scan(  # type: ignore[no-untyped-def]
             summary = {
                 "ports_open": len(ports),
                 "services_seen": len(services),
+                "urls_crawled": len(crawled),
                 "tls_findings": len(tls_hits),
                 "passive_findings": len(passive_hits),
                 "findings": findings_summary,

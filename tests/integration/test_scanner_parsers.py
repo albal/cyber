@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "apps" / "worker" / "src"))
 
-from cyberscan_worker.recon import httpx_probe, naabu  # noqa: E402
+from cyberscan_worker.recon import httpx_probe, katana, naabu  # noqa: E402
 from cyberscan_worker.vuln import nuclei  # noqa: E402
 
 
@@ -198,3 +198,92 @@ def test_shard_skips_empty_buckets():
     """If shards exceeds targets, only non-empty lists come back."""
     out = nuclei.shard(["x", "y"], shards=10)
     assert out == [["x", "y"]] or all(len(b) > 0 for b in out)
+
+
+# ---------- katana ------------------------------------------------------------
+
+
+def test_katana_parses_request_endpoint_field():
+    raw = "\n".join(
+        [
+            json.dumps(
+                {
+                    "request": {"endpoint": "https://example.com/api/Users", "method": "GET"},
+                    "response": {"status_code": 200},
+                }
+            ),
+            json.dumps(
+                {
+                    "request": {"endpoint": "https://example.com/rest/products", "method": "POST"},
+                    "response": {"status_code": 405},
+                }
+            ),
+        ]
+    )
+    found = katana.parse(raw)
+    urls = [c.url for c in found]
+    methods = {(c.url, c.method) for c in found}
+    assert "https://example.com/api/Users" in urls
+    assert ("https://example.com/rest/products", "POST") in methods
+
+
+def test_katana_dedupes_repeated_urls():
+    line = json.dumps({"request": {"endpoint": "https://x/y", "method": "GET"}})
+    raw = "\n".join([line, line, line])
+    assert len(katana.parse(raw)) == 1
+
+
+def test_katana_includes_seeds_even_when_jsonl_is_empty():
+    out = katana.parse("", seeds=["https://example.com/", "https://example.com/login"])
+    urls = [c.url for c in out]
+    assert urls == ["https://example.com/", "https://example.com/login"]
+
+
+def test_katana_skips_malformed_lines_and_missing_endpoints():
+    raw = "garbage\n" + json.dumps({"timestamp": "now"}) + "\n" + json.dumps(
+        {"request": {"endpoint": "https://x/ok"}}
+    )
+    assert [c.url for c in katana.parse(raw)] == ["https://x/ok"]
+
+
+def test_katana_exposes_response_status_when_present():
+    raw = json.dumps(
+        {"request": {"endpoint": "https://x/y"}, "response": {"status_code": "404"}}
+    )
+    out = katana.parse(raw)
+    assert out[0].status == 404
+
+
+def test_katana_seeds_come_first_in_output():
+    raw = json.dumps({"request": {"endpoint": "https://x/discovered"}})
+    out = katana.parse(raw, seeds=["https://x/seed"])
+    assert [c.url for c in out] == ["https://x/seed", "https://x/discovered"]
+
+
+# ---------- nuclei coverage knobs --------------------------------------------
+
+
+def test_nuclei_run_signature_accepts_tags():
+    """Calling shape — make sure callers can pass tags=() through to the CLI builder."""
+    import inspect
+
+    sig = inspect.signature(nuclei.run)
+    assert "tags" in sig.parameters
+    assert "severities" in sig.parameters
+
+
+def test_nuclei_default_severities_now_include_info():
+    """Info-level templates (tech detection, fingerprinting) help triage even
+    when no high-severity vulns are found, so they should be on by default."""
+    import inspect
+
+    default = inspect.signature(nuclei.run).parameters["severities"].default
+    assert "info" in default
+
+
+def test_nuclei_default_tags_cover_common_categories():
+    import inspect
+
+    default = inspect.signature(nuclei.run).parameters["tags"].default
+    expected = {"cve", "exposure", "misconfig", "tech", "default-login"}
+    assert expected.issubset(set(default))
