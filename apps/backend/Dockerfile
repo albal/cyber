@@ -6,8 +6,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml ./
 COPY src ./src
+COPY pyproject.toml ./
 COPY alembic.ini ./
 COPY alembic ./alembic
 RUN pip install --upgrade pip && pip install -e .[dev]
