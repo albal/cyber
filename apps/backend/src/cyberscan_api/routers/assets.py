@@ -1,14 +1,14 @@
 import uuid
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from cyberscan_api.core.config import get_settings
 from cyberscan_api.core.crypto import encrypt_json
 from cyberscan_api.core.db import get_db
-from cyberscan_api.models import Asset, AssetCredential, AuditLog, Role, User, VerificationStatus
+from cyberscan_api.models import Asset, AssetCredential, Role, User, VerificationStatus
 from cyberscan_api.schemas import (
     AssetCreate,
     AssetCredentialBasic,
@@ -22,6 +22,7 @@ from cyberscan_api.schemas import (
     VerificationInstructions,
 )
 from cyberscan_api.services import verification
+from cyberscan_api.services.audit import write_audit
 from cyberscan_api.services.auth_dep import get_current_user_or_token, require_role
 
 router = APIRouter(prefix="/api/v1/assets", tags=["assets"])
@@ -34,6 +35,7 @@ def list_assets(db: Session = Depends(get_db), user: User = Depends(get_current_
 
 @router.post("", response_model=AssetOut, status_code=status.HTTP_201_CREATED)
 def create_asset(
+    request: Request,
     payload: AssetCreate,
     db: Session = Depends(get_db),
     user: User = Depends(require_role(Role.analyst)),
@@ -51,15 +53,14 @@ def create_asset(
         created_by=user.id,
     )
     db.add(asset)
-    db.add(
-        AuditLog(
-            tenant_id=user.tenant_id,
-            actor_user_id=user.id,
-            action="asset.create",
-            target_type="asset",
-            target_id=str(asset.id),
-            details={"hostname": hostname, "method": payload.verification_method},
-        )
+    write_audit(
+        db,
+        request=request,
+        user=user,
+        action="asset.create",
+        target_type="asset",
+        target_id=str(asset.id),
+        details={"hostname": hostname, "method": payload.verification_method},
     )
     db.commit()
     db.refresh(asset)
@@ -98,6 +99,7 @@ def get_verification_instructions(
 
 @router.patch("/{asset_id}", response_model=AssetOut)
 def patch_asset(
+    request: Request,
     asset_id: uuid.UUID,
     payload: AssetUpdate,
     db: Session = Depends(get_db),
@@ -112,15 +114,14 @@ def patch_asset(
         asset.enumerate_subdomains = payload.enumerate_subdomains
         changed["enumerate_subdomains"] = payload.enumerate_subdomains
     if changed:
-        db.add(
-            AuditLog(
-                tenant_id=user.tenant_id,
-                actor_user_id=user.id,
-                action="asset.update",
-                target_type="asset",
-                target_id=str(asset.id),
-                details=changed,
-            )
+        write_audit(
+            db,
+            request=request,
+            user=user,
+            action="asset.update",
+            target_type="asset",
+            target_id=str(asset.id),
+            details=changed,
         )
     db.commit()
     db.refresh(asset)
@@ -129,6 +130,7 @@ def patch_asset(
 
 @router.put("/{asset_id}/schedule", response_model=AssetOut)
 def set_schedule(
+    request: Request,
     asset_id: uuid.UUID,
     payload: AssetSchedule,
     db: Session = Depends(get_db),
@@ -153,15 +155,14 @@ def set_schedule(
 
     asset.schedule_cron = payload.schedule_cron
     asset.schedule_enabled = bool(payload.schedule_cron) and payload.schedule_enabled
-    db.add(
-        AuditLog(
-            tenant_id=user.tenant_id,
-            actor_user_id=user.id,
-            action="asset.schedule",
-            target_type="asset",
-            target_id=str(asset.id),
-            details={"cron": payload.schedule_cron, "enabled": asset.schedule_enabled},
-        )
+    write_audit(
+        db,
+        request=request,
+        user=user,
+        action="asset.schedule",
+        target_type="asset",
+        target_id=str(asset.id),
+        details={"cron": payload.schedule_cron, "enabled": asset.schedule_enabled},
     )
     db.commit()
     db.refresh(asset)
@@ -170,6 +171,7 @@ def set_schedule(
 
 @router.post("/{asset_id}/verify", response_model=AssetOut)
 def run_verification(
+    request: Request,
     asset_id: uuid.UUID,
     db: Session = Depends(get_db),
     user: User = Depends(require_role(Role.analyst)),
@@ -186,15 +188,14 @@ def run_verification(
     )
     if ok:
         asset.verified_at = datetime.now(UTC)
-    db.add(
-        AuditLog(
-            tenant_id=user.tenant_id,
-            actor_user_id=user.id,
-            action="asset.verify",
-            target_type="asset",
-            target_id=str(asset.id),
-            details={"ok": ok, "reason": reason},
-        )
+    write_audit(
+        db,
+        request=request,
+        user=user,
+        action="asset.verify",
+        target_type="asset",
+        target_id=str(asset.id),
+        details={"ok": ok, "reason": reason},
     )
     db.commit()
     db.refresh(asset)
@@ -223,6 +224,7 @@ def _payload_to_secret(payload: CredentialPayload) -> dict:
 
 @router.put("/{asset_id}/credentials", response_model=AssetCredentialMeta)
 def set_credentials(
+    request: Request,
     asset_id: uuid.UUID,
     payload: CredentialPayload,
     db: Session = Depends(get_db),
@@ -259,16 +261,15 @@ def set_credentials(
         )
         db.add(cred)
 
-    db.add(
-        AuditLog(
-            tenant_id=user.tenant_id,
-            actor_user_id=user.id,
-            action="asset.credentials.set",
-            target_type="asset",
-            target_id=str(asset_id),
-            # Never log the secret. Kind + label only.
-            details={"kind": payload.kind, "label": payload.label},
-        )
+    write_audit(
+        db,
+        request=request,
+        user=user,
+        action="asset.credentials.set",
+        target_type="asset",
+        target_id=str(asset_id),
+        # Never log the secret. Kind + label only.
+        details={"kind": payload.kind, "label": payload.label},
     )
     db.commit()
     db.refresh(cred)
@@ -288,6 +289,7 @@ def get_credentials_meta(
 
 @router.delete("/{asset_id}/credentials", status_code=status.HTTP_204_NO_CONTENT)
 def delete_credentials(
+    request: Request,
     asset_id: uuid.UUID,
     db: Session = Depends(get_db),
     user: User = Depends(require_role(Role.analyst)),
@@ -295,13 +297,12 @@ def delete_credentials(
     cred = db.scalar(select(AssetCredential).where(AssetCredential.asset_id == asset_id))
     if cred is not None:
         db.delete(cred)
-        db.add(
-            AuditLog(
-                tenant_id=user.tenant_id,
-                actor_user_id=user.id,
-                action="asset.credentials.delete",
-                target_type="asset",
-                target_id=str(asset_id),
-            )
+        write_audit(
+            db,
+            request=request,
+            user=user,
+            action="asset.credentials.delete",
+            target_type="asset",
+            target_id=str(asset_id),
         )
         db.commit()

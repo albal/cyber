@@ -16,17 +16,17 @@ sys.path.insert(0, str(REPO / "apps" / "backend" / "src"))
 sys.path.insert(0, str(REPO / "apps" / "worker" / "src"))
 
 
-def _clear_module_cache(prefix: str) -> None:
-    for name in list(sys.modules):
-        if name == prefix or name.startswith(f"{prefix}."):
-            del sys.modules[name]
+# Each test instantiates Settings() directly — pydantic-settings reads env at
+# every call, so we don't need module-cache surgery (and we *must not* do
+# it: clearing cyberscan_api modules from sys.modules leaves any later test
+# with a stale `app` that references the old auth_dep, breaking
+# monkeypatches on the freshly-imported one).
 
 
 # ---------- backend -----------------------------------------------------------
 
 
 def test_backend_rejects_default_secret_when_env_is_prod(monkeypatch):
-    _clear_module_cache("cyberscan_api")
     monkeypatch.setenv("ENV", "prod")
     monkeypatch.setenv("API_SECRET_KEY", "dev-secret-change-me")
     monkeypatch.setenv("SEED_ADMIN_PASSWORD", "something-real")
@@ -38,7 +38,6 @@ def test_backend_rejects_default_secret_when_env_is_prod(monkeypatch):
 
 
 def test_backend_rejects_default_seed_admin_password_in_prod(monkeypatch):
-    _clear_module_cache("cyberscan_api")
     monkeypatch.setenv("ENV", "prod")
     monkeypatch.setenv("API_SECRET_KEY", "a-real-key-of-some-length")
     monkeypatch.setenv("SEED_ADMIN_PASSWORD", "admin")
@@ -50,7 +49,6 @@ def test_backend_rejects_default_seed_admin_password_in_prod(monkeypatch):
 
 
 def test_backend_accepts_default_secret_in_dev_env(monkeypatch):
-    _clear_module_cache("cyberscan_api")
     monkeypatch.setenv("ENV", "dev")
     monkeypatch.setenv("API_SECRET_KEY", "dev-secret-change-me")
 
@@ -61,7 +59,6 @@ def test_backend_accepts_default_secret_in_dev_env(monkeypatch):
 
 
 def test_backend_accepts_real_secret_in_prod(monkeypatch):
-    _clear_module_cache("cyberscan_api")
     monkeypatch.setenv("ENV", "prod")
     monkeypatch.setenv("API_SECRET_KEY", "x" * 40)
     monkeypatch.setenv("SEED_ADMIN_PASSWORD", "x" * 20)
@@ -76,7 +73,6 @@ def test_backend_accepts_real_secret_in_prod(monkeypatch):
 
 
 def test_worker_rejects_default_secret_when_env_is_prod(monkeypatch):
-    _clear_module_cache("cyberscan_worker")
     monkeypatch.setenv("ENV", "prod")
     monkeypatch.setenv("API_SECRET_KEY", "dev-secret-change-me")
 
@@ -87,7 +83,6 @@ def test_worker_rejects_default_secret_when_env_is_prod(monkeypatch):
 
 
 def test_worker_accepts_default_secret_in_dev_env(monkeypatch):
-    _clear_module_cache("cyberscan_worker")
     monkeypatch.setenv("ENV", "dev")
     monkeypatch.setenv("API_SECRET_KEY", "dev-secret-change-me")
 

@@ -1,12 +1,13 @@
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from cyberscan_api.core.db import get_db
-from cyberscan_api.models import AuditLog, NotificationChannel, Role, Severity, User
+from cyberscan_api.models import NotificationChannel, Role, Severity, User
 from cyberscan_api.schemas import NotificationChannelCreate, NotificationChannelOut
+from cyberscan_api.services.audit import write_audit
 from cyberscan_api.services.auth_dep import get_current_user_or_token, require_role
 
 router = APIRouter(prefix="/api/v1/notifications", tags=["notifications"])
@@ -27,6 +28,7 @@ def list_channels(
     "/channels", response_model=NotificationChannelOut, status_code=status.HTTP_201_CREATED
 )
 def create_channel(
+    request: Request,
     payload: NotificationChannelCreate,
     db: Session = Depends(get_db),
     user: User = Depends(require_role(Role.admin)),
@@ -39,15 +41,14 @@ def create_channel(
         enabled=payload.enabled,
     )
     db.add(ch)
-    db.add(
-        AuditLog(
-            tenant_id=user.tenant_id,
-            actor_user_id=user.id,
-            action="notification.create",
-            target_type="notification_channel",
-            target_id=str(ch.id),
-            details={"kind": payload.kind},
-        )
+    write_audit(
+        db,
+        request=request,
+        user=user,
+        action="notification.create",
+        target_type="notification_channel",
+        target_id=str(ch.id),
+        details={"kind": payload.kind},
     )
     db.commit()
     db.refresh(ch)
@@ -56,6 +57,7 @@ def create_channel(
 
 @router.delete("/channels/{channel_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_channel(
+    request: Request,
     channel_id: uuid.UUID,
     db: Session = Depends(get_db),
     user: User = Depends(require_role(Role.admin)),
@@ -64,13 +66,12 @@ def delete_channel(
     if not ch:
         raise HTTPException(status_code=404, detail="channel not found")
     db.delete(ch)
-    db.add(
-        AuditLog(
-            tenant_id=user.tenant_id,
-            actor_user_id=user.id,
-            action="notification.delete",
-            target_type="notification_channel",
-            target_id=str(channel_id),
-        )
+    write_audit(
+        db,
+        request=request,
+        user=user,
+        action="notification.delete",
+        target_type="notification_channel",
+        target_id=str(channel_id),
     )
     db.commit()

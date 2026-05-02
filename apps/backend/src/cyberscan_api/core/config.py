@@ -34,10 +34,19 @@ class Settings(BaseSettings):
     # Comma-separated origins, or '*' to allow any (allow_credentials forced false in that case).
     cors_origins: str = Field(default="*")
 
-    # Login rate-limit. 5 attempts / 5min by default. The bucket is keyed
-    # by IP + email so a stuffer can't lock out a target from many IPs.
+    # Login rate-limit. The per-(IP+email) bucket catches single-IP brute
+    # force; the per-account bucket catches distributed credential stuffing
+    # (where each request comes from a different IP, so the IP+email bucket
+    # is useless). Both must allow a request for it to proceed.
     login_rate_max_attempts: int = Field(default=5)
     login_rate_window_s: int = Field(default=300)
+    login_account_max_attempts: int = Field(default=50)
+    login_account_window_s: int = Field(default=3600)
+
+    # Token creation rate-limit (per-user). Stops a compromised admin
+    # session from minting tokens in a hot loop.
+    token_create_max: int = Field(default=10)
+    token_create_window_s: int = Field(default=3600)
 
     # OIDC: when oidc_issuer is set, the backend additionally accepts bearer
     # JWTs signed by that issuer (verified via its JWKS). Users are provisioned

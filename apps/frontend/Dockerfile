@@ -15,8 +15,11 @@ RUN npm run build
 FROM node:24-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
-COPY --from=builder /app/.next/standalone ./
-COPY --from=builder /app/.next/static ./.next/static
-COPY --from=builder /app/public ./public
+RUN addgroup --system --gid 10001 cyberscan \
+ && adduser  --system --uid 10001 --ingroup cyberscan --home /app --shell /sbin/nologin cyberscan
+COPY --from=builder --chown=cyberscan:cyberscan /app/.next/standalone ./
+COPY --from=builder --chown=cyberscan:cyberscan /app/.next/static ./.next/static
+COPY --from=builder --chown=cyberscan:cyberscan /app/public ./public
+USER cyberscan:cyberscan
 EXPOSE 3000
 CMD ["node", "server.js"]

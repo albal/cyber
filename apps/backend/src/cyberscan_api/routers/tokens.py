@@ -11,13 +11,16 @@ import secrets
 import uuid
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from cyberscan_api.core.config import get_settings
 from cyberscan_api.core.db import get_db
-from cyberscan_api.models import ApiToken, AuditLog, Role, User
+from cyberscan_api.models import ApiToken, Role, User
 from cyberscan_api.schemas import ApiTokenCreate, ApiTokenCreated, ApiTokenOut
+from cyberscan_api.services import rate_limit
+from cyberscan_api.services.audit import write_audit
 from cyberscan_api.services.auth_dep import API_TOKEN_PREFIX, require_role
 
 router = APIRouter(prefix="/api/v1/tokens", tags=["tokens"])
@@ -33,10 +36,24 @@ def list_tokens(
 
 @router.post("", response_model=ApiTokenCreated, status_code=status.HTTP_201_CREATED)
 def create_token(
+    request: Request,
     payload: ApiTokenCreate,
     db: Session = Depends(get_db),
     user: User = Depends(require_role(Role.admin)),
 ) -> ApiTokenCreated:
+    s = get_settings()
+    decision = rate_limit.check(
+        key=f"token_create:{user.id}",
+        max_attempts=s.token_create_max,
+        window_s=s.token_create_window_s,
+    )
+    if not decision.allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"too many token creations; retry in {decision.retry_after_s}s",
+            headers={"Retry-After": str(decision.retry_after_s)},
+        )
+
     plaintext = f"{API_TOKEN_PREFIX}{secrets.token_urlsafe(32)}"
     token = ApiToken(
         tenant_id=user.tenant_id,
@@ -46,15 +63,14 @@ def create_token(
         token_prefix=plaintext[: len(API_TOKEN_PREFIX) + 6],
     )
     db.add(token)
-    db.add(
-        AuditLog(
-            tenant_id=user.tenant_id,
-            actor_user_id=user.id,
-            action="token.create",
-            target_type="api_token",
-            target_id=str(token.id),
-            details={"name": payload.name},
-        )
+    write_audit(
+        db,
+        request=request,
+        user=user,
+        action="token.create",
+        target_type="api_token",
+        target_id=str(token.id),
+        details={"name": payload.name},
     )
     db.commit()
     db.refresh(token)
@@ -71,6 +87,7 @@ def create_token(
 
 @router.delete("/{token_id}", status_code=status.HTTP_204_NO_CONTENT)
 def revoke_token(
+    request: Request,
     token_id: uuid.UUID,
     db: Session = Depends(get_db),
     user: User = Depends(require_role(Role.admin)),
@@ -80,13 +97,12 @@ def revoke_token(
         raise HTTPException(status_code=404, detail="token not found")
     if token.revoked_at is None:
         token.revoked_at = datetime.now(UTC)
-    db.add(
-        AuditLog(
-            tenant_id=user.tenant_id,
-            actor_user_id=user.id,
-            action="token.revoke",
-            target_type="api_token",
-            target_id=str(token.id),
-        )
+    write_audit(
+        db,
+        request=request,
+        user=user,
+        action="token.revoke",
+        target_type="api_token",
+        target_id=str(token.id),
     )
     db.commit()

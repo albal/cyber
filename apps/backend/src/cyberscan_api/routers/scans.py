@@ -6,15 +6,16 @@ import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from cyberscan_api.core.celery_client import celery_app
 from cyberscan_api.core.db import SessionLocal, get_db
-from cyberscan_api.models import Asset, AuditLog, Finding, Role, Scan, User, VerificationStatus
+from cyberscan_api.models import Asset, Finding, Role, Scan, User, VerificationStatus
 from cyberscan_api.schemas import FindingOut, ScanCreate, ScanOut
+from cyberscan_api.services.audit import write_audit
 from cyberscan_api.services.auth_dep import get_current_user_or_token, require_role
 
 router = APIRouter(prefix="/api/v1", tags=["scans"])
@@ -25,6 +26,7 @@ INTRUSIVE_VERIFICATION_DAYS = 7
 
 @router.post("/scans", response_model=ScanOut, status_code=status.HTTP_201_CREATED)
 def create_scan(
+    request: Request,
     payload: ScanCreate,
     db: Session = Depends(get_db),
     user: User = Depends(require_role(Role.analyst)),
@@ -57,19 +59,18 @@ def create_scan(
         intrusive=payload.intrusive,
     )
     db.add(scan)
-    db.add(
-        AuditLog(
-            tenant_id=user.tenant_id,
-            actor_user_id=user.id,
-            action="scan.create",
-            target_type="scan",
-            target_id=str(scan.id),
-            details={
-                "asset_id": str(asset.id),
-                "target": asset.target_url,
-                "intrusive": payload.intrusive,
-            },
-        )
+    write_audit(
+        db,
+        request=request,
+        user=user,
+        action="scan.create",
+        target_type="scan",
+        target_id=str(scan.id),
+        details={
+            "asset_id": str(asset.id),
+            "target": asset.target_url,
+            "intrusive": payload.intrusive,
+        },
     )
     db.commit()
     db.refresh(scan)
@@ -108,6 +109,7 @@ _TERMINAL = {"completed", "failed", "partial", "cancelled"}
 
 @router.post("/scans/{scan_id}/cancel", response_model=ScanOut)
 def cancel_scan(
+    request: Request,
     scan_id: uuid.UUID,
     db: Session = Depends(get_db),
     user: User = Depends(require_role(Role.analyst)),
@@ -128,14 +130,13 @@ def cancel_scan(
     scan.status = "cancelled"  # type: ignore[assignment]
     scan.error = "cancelled by user"
     scan.finished_at = datetime.now(UTC)
-    db.add(
-        AuditLog(
-            tenant_id=user.tenant_id,
-            actor_user_id=user.id,
-            action="scan.cancel",
-            target_type="scan",
-            target_id=str(scan.id),
-        )
+    write_audit(
+        db,
+        request=request,
+        user=user,
+        action="scan.cancel",
+        target_type="scan",
+        target_id=str(scan.id),
     )
     db.commit()
     db.refresh(scan)
