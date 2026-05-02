@@ -79,7 +79,19 @@ def get_current_user_or_token(
         _pin_tenant(db, user.tenant_id)
         return user
 
-    return get_current_user(token=token, db=db)
+    # 1) Try the local-JWT path (login-issued).
+    try:
+        return get_current_user(token=token, db=db)
+    except HTTPException:
+        # 2) If OIDC is enabled, try verifying the token against the IdP.
+        from cyberscan_api.services import oidc
+
+        if oidc.is_enabled():
+            user = oidc.verify_and_get_user(token, db)
+            if user is not None:
+                _pin_tenant(db, user.tenant_id)
+                return user
+        raise
 
 
 # substitute the docstring placeholder

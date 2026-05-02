@@ -25,6 +25,11 @@ spec:
           envFrom:
             - secretRef:
                 name: {{ include "cyberscan.fullname" $ }}-app
+          {{- if and (eq $pool "passive") $.Values.zap.enabled }}
+          env:
+            - name: ZAP_PROXY
+              value: {{ printf "http://%s-zap:8090" (include "cyberscan.fullname" $) | quote }}
+          {{- end }}
           command: ["celery"]
           args: ["-A", "cyberscan_worker.celery_app:celery_app", "worker", "--loglevel=info", "-Q", {{ $cfg.queues | quote }}]
           securityContext:

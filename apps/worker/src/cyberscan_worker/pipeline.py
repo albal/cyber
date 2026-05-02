@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import uuid
 from datetime import UTC, datetime
 from urllib.parse import urlparse
@@ -23,7 +24,7 @@ from cyberscan_worker.feeds import epss
 from cyberscan_worker.feeds.store import get_cve, is_kev
 from cyberscan_worker.notify.dispatcher import ScanSummary, dispatch
 from cyberscan_worker.passive import zap_baseline
-from cyberscan_worker.recon import httpx_probe, naabu
+from cyberscan_worker.recon import httpx_probe, katana, naabu
 from cyberscan_worker.risk import RiskInputs, composite_score, dedupe_key, severity_for
 from cyberscan_worker.tls import sslyze_runner
 from cyberscan_worker.vuln import nuclei
@@ -103,7 +104,10 @@ def _set_state(
     db.commit()
 
 
-def _load_scan_meta(db: Session, scan_id: str) -> tuple[str, str, str, str, str]:
+def _load_scan_meta(db: Session, scan_id: str):
+    """Returns (tenant_id, asset_id, asset_name, target_url, hostname,
+    cred_kind, cred_ciphertext) — last two may be None when no credentials
+    are set on the asset."""
     row = db.execute(
         text(
             """
@@ -111,8 +115,12 @@ def _load_scan_meta(db: Session, scan_id: str) -> tuple[str, str, str, str, str]
                    a.id::text AS asset_id,
                    a.name AS asset_name,
                    a.target_url,
-                   a.hostname
-              FROM scans s JOIN assets a ON a.id = s.asset_id
+                   a.hostname,
+                   c.kind AS cred_kind,
+                   c.secret_ciphertext AS cred_ciphertext
+              FROM scans s
+              JOIN assets a ON a.id = s.asset_id
+              LEFT JOIN asset_credentials c ON c.asset_id = a.id
              WHERE s.id = :id
             """
         ),
@@ -120,7 +128,15 @@ def _load_scan_meta(db: Session, scan_id: str) -> tuple[str, str, str, str, str]
     ).first()
     if not row:
         raise RuntimeError(f"scan {scan_id} not found")
-    return row.tenant_id, row.asset_id, row.asset_name, row.target_url, row.hostname
+    return (
+        row.tenant_id,
+        row.asset_id,
+        row.asset_name,
+        row.target_url,
+        row.hostname,
+        row.cred_kind,
+        row.cred_ciphertext,
+    )
 
 
 def _previous_dedupe_keys(db: Session, asset_id: str, current_scan_id: str) -> set[str]:
@@ -153,8 +169,28 @@ def run_scan(  # type: ignore[no-untyped-def]
     with SessionLocal() as db:
         # First load happens with admin GUC so we can read scans across tenants.
         _set_tenant(db, "")
-        meta_tenant, asset_id, asset_name, target_url, hostname = _load_scan_meta(db, scan_id)
+        (
+            meta_tenant,
+            asset_id,
+            asset_name,
+            target_url,
+            hostname,
+            cred_kind,
+            cred_ciphertext,
+        ) = _load_scan_meta(db, scan_id)
         tid = tenant_id or meta_tenant
+
+        # Decrypt asset credentials (if any) into ScannerAuth. Decryption
+        # failures are logged and treated as "no auth" — never fatal.
+        from cyberscan_worker.auth.credentials import load_for_asset
+
+        scanner_auth = load_for_asset(
+            ciphertext=cred_ciphertext,
+            kind=cred_kind,
+            secret_key=os.environ.get("API_SECRET_KEY", "dev-secret-change-me"),
+        )
+        if not scanner_auth.is_empty():
+            log.info("scan %s: using stored %s credentials for authenticated scan", scan_id, cred_kind)
         _set_tenant(db, tid)
 
         _set_state(
@@ -173,24 +209,55 @@ def run_scan(  # type: ignore[no-untyped-def]
             if not services:
                 services = httpx_probe.run([target_url], timeout_s=60)
 
+            # Stage 1b: crawl. Without this Nuclei only ever hits the homepage,
+            # which on SPAs (Angular/React) misses every API endpoint. Katana
+            # walks links, parses JS bundles + source maps, and follows
+            # known-files (robots.txt, sitemap.xml).
+            _set_state(db, scan_id, status="running", stage="crawl", progress=22)
+            crawl_seeds = [svc.url for svc in services if svc.url.startswith("http")] or [target_url]
+            depth = s.crawl_depth_intrusive if intrusive else s.crawl_depth
+            crawled = katana.run(
+                crawl_seeds,
+                depth=depth,
+                max_urls=s.crawl_max_urls,
+                timeout_s=s.crawl_timeout_s,
+                headers=scanner_auth.headers or None,
+                cookie_header=scanner_auth.cookie_header,
+            )
+            log.info("crawl: %d url(s) discovered (seeds=%d)", len(crawled), len(crawl_seeds))
+
             _set_state(db, scan_id, status="running", stage="vuln", progress=30)
 
-            # Stage 2a: nuclei (sharded). Intrusive mode lifts the severity
-            # filter and enables intrusive templates (brute-force, fuzzing).
-            urls = [svc.url for svc in services] or [target_url]
+            # Stage 2a: nuclei (sharded). Default tag set covers CVEs, exposures,
+            # misconfigs, default logins, exposed tokens / panels, JS-file analysis.
+            # Intrusive mode adds -as (automatic scan: enables fuzz / brute / dast).
+            urls = [c.url for c in crawled] or [target_url]
             shards = nuclei.shard(urls, s.nuclei_shards)
             all_hits: list[nuclei.NucleiHit] = []
-            extra_args = ["-as"] if intrusive else None  # -as: automatic scan, includes intrusive
-            severities = (
-                ("critical", "high", "medium", "low", "info")
-                if intrusive
-                else ("critical", "high", "medium", "low")
-            )
+            severities = ("critical", "high", "medium", "low", "info")
+            if intrusive:
+                # -as enables the full template set (fuzz, intrusive, dast).
+                extra_args = ["-as"]
+                tags: tuple[str, ...] = ()  # let -as drive selection
+            else:
+                extra_args = None
+                tags = (
+                    "cve", "exposure", "misconfig", "tech", "exposed-panel",
+                    "default-login", "exposed-tokens", "js", "config",
+                )
             for i, bucket in enumerate(shards):
                 progress = 30 + int(30 * (i + 1) / max(len(shards), 1))
                 _set_state(db, scan_id, status="running", stage=f"vuln/shard{i+1}", progress=progress)
                 all_hits.extend(
-                    nuclei.run(bucket, severities=severities, extra_args=extra_args, timeout_s=600)
+                    nuclei.run(
+                        bucket,
+                        severities=severities,
+                        tags=tags,
+                        extra_args=extra_args,
+                        timeout_s=900 if intrusive else 600,
+                        headers=scanner_auth.headers or None,
+                        cookie_header=scanner_auth.cookie_header,
+                    )
                 )
 
             # Stage 2b: TLS deep inspection on each TLS endpoint
@@ -397,6 +464,9 @@ def run_scan(  # type: ignore[no-untyped-def]
             summary = {
                 "ports_open": len(ports),
                 "services_seen": len(services),
+                "urls_crawled": len(crawled),
+                "authenticated": not scanner_auth.is_empty(),
+                "auth_kind": cred_kind if not scanner_auth.is_empty() else None,
                 "tls_findings": len(tls_hits),
                 "passive_findings": len(passive_hits),
                 "findings": findings_summary,

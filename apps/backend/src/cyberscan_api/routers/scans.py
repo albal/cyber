@@ -207,24 +207,92 @@ def export_findings_json(
     )
 
 
-@router.websocket("/ws/scans/{scan_id}")
-async def scan_progress_ws(websocket: WebSocket, scan_id: uuid.UUID) -> None:
-    """Polls scan state and pushes updates. Closes when scan is terminal.
+@router.get("/scans/{scan_id}/findings.pdf")
+def export_findings_pdf(
+    scan_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user_or_token),
+) -> StreamingResponse:
+    from cyberscan_api.services.pdf_report import render as render_pdf
 
-    NOTE: websocket bypasses the FastAPI Depends() OIDC chain at v0.2 — wire a
-    token query param + tenant GUC before exposing publicly. Tracked for v1.0.
+    scan = db.get(Scan, scan_id)
+    if not scan:
+        raise HTTPException(status_code=404, detail="scan not found")
+    asset = db.get(Asset, scan.asset_id)
+
+    findings = list(
+        db.scalars(
+            select(Finding)
+            .where(Finding.scan_id == scan_id)
+            .order_by(Finding.risk_score.desc(), Finding.severity)
+        )
+    )
+
+    pdf_bytes = render_pdf(
+        scan={
+            "id": str(scan.id),
+            "started_at": scan.started_at,
+            "finished_at": scan.finished_at,
+            "created_at": scan.created_at,
+            "summary": scan.summary,
+        },
+        asset={
+            "name": getattr(asset, "name", ""),
+            "target_url": getattr(asset, "target_url", ""),
+        },
+        findings=[
+            {
+                "title": f.title,
+                "severity": f.severity.value if hasattr(f.severity, "value") else f.severity,
+                "risk_score": f.risk_score,
+                "cve_ids": f.cve_ids or [],
+                "cwe_ids": f.cwe_ids or [],
+                "compliance_tags": f.compliance_tags or [],
+                "location": f.location,
+                "remediation": f.remediation,
+            }
+            for f in findings
+        ],
+    )
+
+    filename = f"cyberscan-{scan_id}.pdf"
+    return StreamingResponse(
+        iter([pdf_bytes]),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.websocket("/ws/scans/{scan_id}")
+async def scan_progress_ws(
+    websocket: WebSocket,
+    scan_id: uuid.UUID,
+    token: str | None = None,
+) -> None:
+    """Push scan-progress updates until the scan is terminal.
+
+    Auth: the bearer token (JWT or API token) is passed as ?token=...
+    because browsers can't set Authorization on the WebSocket open. We
+    resolve the user, pin the tenant GUC, and reject if the scan belongs
+    to a different tenant or doesn't exist.
     """
+    user = _ws_authenticate(token)
+    if user is None:
+        await websocket.close(code=4401)  # 4xxx = application close codes
+        return
+
     await websocket.accept()
     try:
         last_payload: dict | None = None
         terminal = {"completed", "failed", "partial"}
         while True:
             with SessionLocal() as db:
-                # No tenant GUC here — the websocket is read-only on a single id
-                # and the user has already authenticated to obtain the scan_id.
-                db.execute(text("SELECT set_config('app.tenant_id', '', true)"))
+                db.execute(
+                    text("SELECT set_config('app.tenant_id', :tid, true)"),
+                    {"tid": str(user.tenant_id)},
+                )
                 scan = db.get(Scan, scan_id)
-                if not scan:
+                if not scan or scan.tenant_id != user.tenant_id:
                     await websocket.send_json({"error": "scan not found"})
                     break
                 payload = {
@@ -241,3 +309,40 @@ async def scan_progress_ws(websocket: WebSocket, scan_id: uuid.UUID) -> None:
             await asyncio.sleep(1.0)
     except WebSocketDisconnect:
         pass
+
+
+def _ws_authenticate(token: str | None) -> User | None:
+    """Resolve a websocket-supplied token into a User, or None if invalid.
+
+    Mirrors get_current_user_or_token but without FastAPI's Depends() chain
+    (which doesn't apply to websockets). Returns None on any failure so the
+    caller can close the socket; never raises.
+    """
+    if not token:
+        return None
+
+    import hashlib
+    import jwt as pyjwt
+
+    from cyberscan_api.core.security import decode_token
+    from cyberscan_api.models import ApiToken
+    from cyberscan_api.services.auth_dep import API_TOKEN_PREFIX
+
+    try:
+        with SessionLocal() as db:
+            if token.startswith(API_TOKEN_PREFIX):
+                token_hash = hashlib.sha256(token.encode()).hexdigest()
+                api_tok = (
+                    db.query(ApiToken).filter(ApiToken.token_hash == token_hash).one_or_none()
+                )
+                if not api_tok or api_tok.revoked_at is not None:
+                    return None
+                return db.get(User, api_tok.created_by)
+
+            payload = decode_token(token)
+            sub = payload.get("sub")
+            if not sub:
+                return None
+            return db.get(User, uuid.UUID(sub))
+    except (pyjwt.PyJWTError, ValueError, Exception):  # noqa: BLE001
+        return None

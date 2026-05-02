@@ -10,6 +10,16 @@ interface VerificationInstructions {
   instructions: string;
 }
 
+interface CredentialsMeta {
+  id: string;
+  asset_id: string;
+  kind: string;
+  label: string | null;
+  created_at: string;
+}
+
+type CredentialKind = "cookie" | "bearer" | "basic" | "header";
+
 export default function AssetDetailPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
@@ -23,12 +33,28 @@ export default function AssetDetailPage() {
   const [cron, setCron] = useState("");
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
 
+  // Credentials state
+  const [creds, setCreds] = useState<CredentialsMeta | null>(null);
+  const [credKind, setCredKind] = useState<CredentialKind>("cookie");
+  const [credLabel, setCredLabel] = useState("");
+  const [credCookie, setCredCookie] = useState("");
+  const [credToken, setCredToken] = useState("");
+  const [credUsername, setCredUsername] = useState("");
+  const [credPassword, setCredPassword] = useState("");
+  const [credHeaderName, setCredHeaderName] = useState("");
+  const [credHeaderValue, setCredHeaderValue] = useState("");
+
   async function load() {
     const a = await api<Asset>(`/api/v1/assets/${id}`);
     setAsset(a);
     setCron(a.schedule_cron ?? "");
     setScheduleEnabled(a.schedule_enabled);
     setInstr(await api<VerificationInstructions>(`/api/v1/assets/${id}/verify`));
+    try {
+      setCreds(await api<CredentialsMeta | null>(`/api/v1/assets/${id}/credentials`));
+    } catch {
+      setCreds(null);
+    }
   }
 
   useEffect(() => {
@@ -59,6 +85,47 @@ export default function AssetDetailPage() {
       router.push(`/scans/${scan.id}`);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "scan failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveCredentials() {
+    setBusy(true);
+    setErr(null);
+    try {
+      let body: Record<string, unknown> = { kind: credKind, label: credLabel || null };
+      if (credKind === "cookie") body = { ...body, cookie_header: credCookie };
+      else if (credKind === "bearer") body = { ...body, token: credToken };
+      else if (credKind === "basic") body = { ...body, username: credUsername, password: credPassword };
+      else body = { ...body, name: credHeaderName, value: credHeaderValue };
+
+      const updated = await api<CredentialsMeta>(`/api/v1/assets/${id}/credentials`, {
+        method: "PUT",
+        body: JSON.stringify(body),
+      });
+      setCreds(updated);
+      // Clear plaintext fields once stored.
+      setCredCookie("");
+      setCredToken("");
+      setCredPassword("");
+      setCredHeaderValue("");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "credentials save failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteCredentials() {
+    if (!confirm("Remove stored credentials? Future scans will be unauthenticated.")) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await api(`/api/v1/assets/${id}/credentials`, { method: "DELETE" });
+      setCreds(null);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "credentials delete failed");
     } finally {
       setBusy(false);
     }
@@ -128,6 +195,109 @@ export default function AssetDetailPage() {
           </button>
         </div>
         {err && <p className="text-critical text-sm mt-3">{err}</p>}
+      </section>
+
+      <section className="rounded-lg border border-border bg-panel p-5">
+        <h2 className="font-semibold mb-2">Authentication</h2>
+        <p className="text-sm text-gray-400 mb-3">
+          Optional. When set, the crawler and Nuclei attach these credentials so authenticated
+          parts of the app get scanned. Stored encrypted (Fernet) — the secret is never returned
+          by the API after creation.
+          {creds && (
+            <span className="ml-2 text-accent">
+              · current: <b>{creds.kind}</b>
+              {creds.label ? ` (${creds.label})` : ""}
+            </span>
+          )}
+        </p>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <select
+            value={credKind}
+            onChange={(e) => setCredKind(e.target.value as CredentialKind)}
+            className="rounded border border-border bg-bg px-3 py-2"
+          >
+            <option value="cookie">Cookie</option>
+            <option value="bearer">Bearer token</option>
+            <option value="basic">HTTP Basic</option>
+            <option value="header">Custom header</option>
+          </select>
+          <input
+            placeholder="Label (e.g. admin session)"
+            value={credLabel}
+            onChange={(e) => setCredLabel(e.target.value)}
+            className="rounded border border-border bg-bg px-3 py-2"
+          />
+          {credKind === "cookie" && (
+            <input
+              placeholder="Cookie header value (e.g. session=abc123; csrf=...)"
+              value={credCookie}
+              onChange={(e) => setCredCookie(e.target.value)}
+              className="rounded border border-border bg-bg px-3 py-2 md:col-span-2"
+              type="password"
+            />
+          )}
+          {credKind === "bearer" && (
+            <input
+              placeholder="Bearer token (will be sent as Authorization: Bearer …)"
+              value={credToken}
+              onChange={(e) => setCredToken(e.target.value)}
+              className="rounded border border-border bg-bg px-3 py-2 md:col-span-2"
+              type="password"
+            />
+          )}
+          {credKind === "basic" && (
+            <>
+              <input
+                placeholder="Username"
+                value={credUsername}
+                onChange={(e) => setCredUsername(e.target.value)}
+                className="rounded border border-border bg-bg px-3 py-2"
+              />
+              <input
+                placeholder="Password"
+                value={credPassword}
+                onChange={(e) => setCredPassword(e.target.value)}
+                className="rounded border border-border bg-bg px-3 py-2"
+                type="password"
+              />
+            </>
+          )}
+          {credKind === "header" && (
+            <>
+              <input
+                placeholder="Header name (e.g. X-API-Key)"
+                value={credHeaderName}
+                onChange={(e) => setCredHeaderName(e.target.value)}
+                className="rounded border border-border bg-bg px-3 py-2"
+              />
+              <input
+                placeholder="Header value"
+                value={credHeaderValue}
+                onChange={(e) => setCredHeaderValue(e.target.value)}
+                className="rounded border border-border bg-bg px-3 py-2"
+                type="password"
+              />
+            </>
+          )}
+        </div>
+        <div className="mt-3 flex gap-3">
+          <button
+            onClick={saveCredentials}
+            disabled={busy}
+            className="rounded bg-accent text-black px-4 py-2 text-sm font-semibold disabled:opacity-50"
+          >
+            {creds ? "Replace credentials" : "Store credentials"}
+          </button>
+          {creds && (
+            <button
+              onClick={deleteCredentials}
+              disabled={busy}
+              className="rounded border border-border px-4 py-2 text-sm disabled:opacity-50"
+            >
+              Remove
+            </button>
+          )}
+        </div>
       </section>
 
       <section className="rounded-lg border border-border bg-panel p-5">

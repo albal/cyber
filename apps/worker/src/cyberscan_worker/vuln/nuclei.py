@@ -32,9 +32,15 @@ class NucleiHit:
 
 def run(
     targets: list[str],
-    severities: tuple[str, ...] = ("critical", "high", "medium", "low"),
+    severities: tuple[str, ...] = ("critical", "high", "medium", "low", "info"),
+    tags: tuple[str, ...] = (
+        "cve", "exposure", "misconfig", "tech", "exposed-panel",
+        "default-login", "exposed-tokens", "js", "config",
+    ),
     timeout_s: int = 600,
     extra_args: list[str] | None = None,
+    headers: list[str] | None = None,
+    cookie_header: str | None = None,
 ) -> list[NucleiHit]:
     if not targets:
         return []
@@ -49,10 +55,18 @@ def run(
         "-severity", ",".join(severities),
         "-no-color",
         "-disable-update-check",
-        "-rate-limit", "150",
-        "-c", "25",
+        "-rate-limit", "200",
+        "-c", "30",
         "-timeout", "10",
+        # Follow redirects so APIs that 30x to /login get probed too.
+        "-follow-redirects",
     ]
+    if tags:
+        cmd += ["-tags", ",".join(tags)]
+    for h in headers or []:
+        cmd += ["-H", h]
+    if cookie_header:
+        cmd += ["-H", f"Cookie: {cookie_header}"]
     if extra_args:
         cmd.extend(extra_args)
 

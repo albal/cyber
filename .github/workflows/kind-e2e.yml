@@ -1,0 +1,117 @@
+name: kind-e2e
+
+on:
+  schedule:
+    - cron: "17 4 * * *"   # 04:17 UTC nightly
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+concurrency:
+  group: kind-e2e
+  cancel-in-progress: true
+
+jobs:
+  helm-on-kind:
+    name: helm install on kind + smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Cache pip + npm
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.npm
+          key: kind-e2e-${{ runner.os }}-${{ hashFiles('apps/**/pyproject.toml') }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build images locally
+        run: |
+          set -euo pipefail
+          for c in backend worker frontend; do
+            docker buildx build --load -t "cyberscan-$c:ci" "apps/$c"
+          done
+
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: cyberscan
+          version: v0.24.0
+          wait: 120s
+
+      - name: Load images into kind
+        run: |
+          for c in backend worker frontend; do
+            kind load docker-image "cyberscan-$c:ci" --name cyberscan
+          done
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+
+      - name: Install chart with locally-built images
+        run: |
+          helm repo add bitnami https://charts.bitnami.com/bitnami
+          helm dependency update charts/cyberscan
+          helm install cyberscan charts/cyberscan \
+            --create-namespace --namespace cyberscan \
+            --set global.image.registry="" \
+            --set global.image.repository="" \
+            --set global.image.tag=ci \
+            --set global.image.pullPolicy=IfNotPresent \
+            --set frontend.image.name=cyberscan-frontend \
+            --set backend.image.name=cyberscan-backend \
+            --set workers.recon.image.name=cyberscan-worker \
+            --set workers.vuln.image.name=cyberscan-worker \
+            --set workers.tls.image.name=cyberscan-worker \
+            --set workers.passive.image.name=cyberscan-worker \
+            --set workers.feeds.image.name=cyberscan-worker \
+            --set beat.image.name=cyberscan-worker \
+            --set backend.env.FEEDS_USE_FIXTURES="true" \
+            --wait --timeout 15m
+
+      - name: Show pods
+        if: always()
+        run: kubectl -n cyberscan get pods -o wide
+
+      - name: Seed admin + feeds
+        run: |
+          kubectl -n cyberscan exec deploy/cyberscan-cyberscan-backend -- \
+            python -m cyberscan_api.scripts.seed
+          kubectl -n cyberscan create job --from=cronjob/cyberscan-cyberscan-feeds seed-now
+          kubectl -n cyberscan wait --for=condition=complete --timeout=5m job/seed-now
+
+      - name: Smoke test API via port-forward
+        run: |
+          kubectl -n cyberscan port-forward svc/cyberscan-cyberscan-backend 18080:8000 &
+          PF_PID=$!
+          for i in $(seq 1 30); do
+            curl -fsS http://localhost:18080/healthz && break
+            sleep 2
+          done
+          curl -fsS http://localhost:18080/healthz | grep -q '"status":"ok"'
+          # Login + list assets (should be empty initially)
+          TOKEN=$(curl -fsS -X POST http://localhost:18080/api/v1/auth/login \
+            -d 'username=admin@example.com&password=admin' \
+            -H 'Content-Type: application/x-www-form-urlencoded' | python3 -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
+          curl -fsS http://localhost:18080/api/v1/assets \
+            -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
+          kill $PF_PID || true
+
+      - name: Logs on failure
+        if: failure()
+        run: |
+          kubectl -n cyberscan describe pods
+          kubectl -n cyberscan logs deploy/cyberscan-cyberscan-backend --tail=200 || true
+          kubectl -n cyberscan logs deploy/cyberscan-cyberscan-worker-recon --tail=200 || true
+
+      - name: Tear down
+        if: always()
+        run: kind delete cluster --name cyberscan

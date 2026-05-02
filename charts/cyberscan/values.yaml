@@ -90,6 +90,18 @@ serviceMonitor:
   interval: 30s
   additionalLabels: {}
 
+zap:
+  # When enabled, deploys the OWASP ZAP daemon as a separate pod and points
+  # the passive worker pool at it (via ZAP_PROXY env). Off by default so
+  # default installs stay lean; turn it on for production-grade ZAP scans.
+  enabled: false
+  image: zaproxy/zap-stable:2.16.0
+  pullPolicy: IfNotPresent
+  replicas: 1
+  resources:
+    requests: { cpu: 250m, memory: 1Gi }
+    limits:   { cpu: 1500m, memory: 2Gi }
+
 notifications:
   smtp:
     host: ""

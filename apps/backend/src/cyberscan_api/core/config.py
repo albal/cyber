@@ -27,6 +27,15 @@ class Settings(BaseSettings):
     # Comma-separated origins, or '*' to allow any (allow_credentials forced false in that case).
     cors_origins: str = Field(default="*")
 
+    # OIDC: when oidc_issuer is set, the backend additionally accepts bearer
+    # JWTs signed by that issuer (verified via its JWKS). Users are provisioned
+    # on first sign-in into the tenant whose slug matches `oidc_default_tenant`.
+    oidc_issuer: str = Field(default="")
+    oidc_audience: str = Field(default="cyberscan")
+    oidc_default_tenant: str = Field(default="default")
+    oidc_email_claim: str = Field(default="email")
+    oidc_role_claim: str = Field(default="role")
+
 
 @lru_cache
 def get_settings() -> Settings:

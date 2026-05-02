@@ -16,6 +16,13 @@ class Settings(BaseSettings):
     nuclei_shards: int = Field(default=4)
     scan_timeout_min: int = Field(default=20)
 
+    # Crawler (katana). Default 3-deep / 500 URLs / 3-min budget keeps a
+    # typical scan inside the 15-min SLA. Intrusive scans go deeper.
+    crawl_depth: int = Field(default=3)
+    crawl_depth_intrusive: int = Field(default=5)
+    crawl_max_urls: int = Field(default=500)
+    crawl_timeout_s: int = Field(default=180)
+
     nvd_api_key: str = Field(default="")
     feeds_use_fixtures: bool = Field(default=True)
 

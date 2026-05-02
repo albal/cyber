@@ -2,6 +2,7 @@ from cyberscan_api.models.base import Base
 from cyberscan_api.models.tables import (
     ApiToken,
     Asset,
+    AssetCredential,
     AuditLog,
     Finding,
     NotificationChannel,
@@ -20,6 +21,7 @@ __all__ = [
     "User",
     "Role",
     "Asset",
+    "AssetCredential",
     "Scan",
     "ScanStatus",
     "Finding",
