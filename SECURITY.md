@@ -5,7 +5,6 @@ rather than opening a public GitHub issue.
 
 ## Reporting
 
-- **Email:** `security@example.com` (replace before deploying)
 - **GitHub:** open a [security advisory](https://github.com/albal/cyber/security/advisories/new).
 
 Please include:
@@ -16,7 +15,7 @@ Please include:
 
 ## Response
 
-- We aim to acknowledge reports within **2 business days**.
+- We aim to acknowledge reports within **5 business days**.
 - We will keep you updated until a fix lands and a release is cut.
 - Reporters who want public credit are listed in release notes.
 
