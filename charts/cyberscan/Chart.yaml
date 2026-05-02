@@ -6,16 +6,9 @@ version: 0.1.0
 appVersion: "0.1.0"
 maintainers:
   - name: cyberscan contributors
-dependencies:
-  - name: postgresql
-    version: 16.x.x
-    repository: https://charts.bitnami.com/bitnami
-    condition: postgresql.enabled
-  - name: redis
-    version: 20.x.x
-    repository: https://charts.bitnami.com/bitnami
-    condition: redis.enabled
-  - name: minio
-    version: 14.x.x
-    repository: https://charts.bitnami.com/bitnami
-    condition: minio.enabled
+# Postgres / redis / minio all ship as chart-local templates using the
+# upstream-official images (postgres:18-alpine, redis:8-alpine,
+# minio/minio:RELEASE.*). The Bitnami subcharts were dropped in 2026-05
+# after Bitnami archived their public image tags to `bitnamilegacy/*`
+# and started failing the chart's own NOTES.txt image-allowlist check.
+dependencies: []

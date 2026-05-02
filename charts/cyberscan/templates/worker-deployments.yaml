@@ -31,7 +31,11 @@ spec:
               value: {{ printf "http://%s-zap:8090" (include "cyberscan.fullname" $) | quote }}
           {{- end }}
           command: ["celery"]
-          args: ["-A", "cyberscan_worker.celery_app:celery_app", "worker", "--loglevel=info", "-Q", {{ $cfg.queues | quote }}]
+          # `--concurrency` is set explicitly because Celery's default
+          # (cpu_count) blows past the per-pool memory limit on
+          # multi-core nodes — each prefork worker is a full Python
+          # process. Override with $cfg.concurrency in values.yaml.
+          args: ["-A", "cyberscan_worker.celery_app:celery_app", "worker", "--loglevel=info", "-Q", {{ $cfg.queues | quote }}, "--concurrency={{ $cfg.concurrency | default 2 }}"]
           securityContext:
             capabilities:
               add: ["NET_RAW"]   # naabu SYN scans
