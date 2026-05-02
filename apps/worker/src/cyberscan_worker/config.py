@@ -1,11 +1,20 @@
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+DEFAULT_API_SECRET_KEY = "dev-secret-change-me"
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    env: str = Field(default="dev")
+
+    # Mirrors the backend setting; the worker uses it to decrypt per-asset
+    # scanner credentials. Worker and backend MUST share the same value.
+    api_secret_key: str = Field(default=DEFAULT_API_SECRET_KEY)
 
     database_url: str = Field(default="postgresql+psycopg://cyberscan:cyberscan@db:5432/cyberscan")
     celery_broker_url: str = Field(default="redis://queue:6379/0")
@@ -33,6 +42,15 @@ class Settings(BaseSettings):
     smtp_password: str = Field(default="")
     smtp_from: str = Field(default="cyberscan@example.com")
     smtp_starttls: bool = Field(default=True)
+
+    @model_validator(mode="after")
+    def _validate_secrets(self) -> "Settings":
+        if self.env.lower() != "dev" and self.api_secret_key == DEFAULT_API_SECRET_KEY:
+            raise ValueError(
+                "API_SECRET_KEY is set to the built-in default; "
+                "generate a strong value before running with ENV != 'dev'."
+            )
+        return self
 
 
 @lru_cache

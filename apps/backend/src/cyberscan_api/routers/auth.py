@@ -10,17 +10,9 @@ from cyberscan_api.models import User
 from cyberscan_api.schemas import Token, UserOut
 from cyberscan_api.services import rate_limit
 from cyberscan_api.services.auth_dep import get_current_user
+from cyberscan_api.services.client_ip import client_ip as _client_ip
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
-
-
-def _client_ip(req: Request) -> str:
-    """Best-effort caller IP. Honors X-Forwarded-For when behind ingress."""
-    xff = req.headers.get("x-forwarded-for")
-    if xff:
-        # First entry is the original client; subsequent ones are proxies.
-        return xff.split(",")[0].strip()
-    return req.client.host if req.client else "unknown"
 
 
 @router.post("/login", response_model=Token)

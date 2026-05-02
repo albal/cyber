@@ -39,6 +39,15 @@ class _JwksCache:
 _cache = _JwksCache()
 _CACHE_TTL_S = 3600  # 1 hour
 
+# Allow only asymmetric algorithms. Accepting the header-supplied alg without
+# this allowlist enables a class of confusion attacks where a forged token
+# signed with HS256 against the issuer's RSA *public* key passes verification
+# (PyJWKClient hands back the public key bytes; HS256 happily HMACs against
+# them). Pinning to RSA / ECDSA / RSA-PSS variants makes that impossible.
+_ALLOWED_ALGS = frozenset(
+    ("RS256", "RS384", "RS512", "ES256", "ES384", "ES512", "PS256", "PS384", "PS512")
+)
+
 
 def is_enabled() -> bool:
     return bool(get_settings().oidc_issuer)
@@ -57,9 +66,9 @@ def verify_and_get_user(token: str, db: Session) -> User | None:
     except pyjwt.PyJWTError:
         return None
 
-    # Cheap rejection: token must reference an algorithm we support.
     alg = unverified.get("alg")
-    if alg in (None, "none"):
+    if alg not in _ALLOWED_ALGS:
+        log.info("OIDC token rejected: unsupported alg %r", alg)
         return None
 
     try:
@@ -68,7 +77,7 @@ def verify_and_get_user(token: str, db: Session) -> User | None:
         claims = pyjwt.decode(
             token,
             signing_key,
-            algorithms=[alg],
+            algorithms=sorted(_ALLOWED_ALGS),
             issuer=s.oidc_issuer.rstrip("/"),
             audience=s.oidc_audience or None,
             options={"require": ["exp", "iat"]},

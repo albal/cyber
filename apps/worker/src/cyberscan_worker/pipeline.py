@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import uuid
 from datetime import UTC, datetime
 from urllib.parse import urlparse
@@ -212,7 +211,7 @@ def run_scan(  # type: ignore[no-untyped-def]
         scanner_auth = load_for_asset(
             ciphertext=cred_ciphertext,
             kind=cred_kind,
-            secret_key=os.environ.get("API_SECRET_KEY", "dev-secret-change-me"),
+            secret_key=get_settings().api_secret_key,
         )
         if not scanner_auth.is_empty():
             log.info("scan %s: using stored %s credentials for authenticated scan", scan_id, cred_kind)
