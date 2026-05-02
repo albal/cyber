@@ -6,15 +6,78 @@ DNS TXT and HTTP header methods are stubbed for v0.2.
 from __future__ import annotations
 
 import secrets
+import socket
+from ipaddress import ip_address
 from urllib.parse import urlparse
 
 import dns.resolver
 import httpx
 
+from cyberscan_api.core.config import get_settings
+
 WELL_KNOWN_PATH = "/.well-known/cyberscan-{token}.txt"
 DNS_TXT_HOST = "_cyberscan-verify.{domain}"
 HEADER_NAME = "X-Cyberscan-Verify"
 HTTP_TIMEOUT = 8.0
+
+
+class _PrivateAddressRefused(httpx.RequestError):
+    pass
+
+
+def _is_public_ip(ip: str) -> bool:
+    try:
+        addr = ip_address(ip)
+    except ValueError:
+        return False
+    if addr.is_loopback or addr.is_private or addr.is_link_local:
+        return False
+    if addr.is_multicast or addr.is_unspecified or addr.is_reserved:
+        return False
+    # Cloud-metadata addresses fall under is_link_local already (169.254/16,
+    # fe80::/10), but block IPv6 ULA explicitly.
+    return not (addr.version == 6 and addr.is_site_local)
+
+
+def _resolve_public_ips(host: str) -> list[str]:
+    """Return all public IPs ``host`` resolves to, raising if any are private.
+
+    Refusing the *whole* hostname when any answer is private keeps DNS-rebinding
+    style attacks honest: an attacker can't return one public + one private A
+    record and gamble on which one httpx picks for the actual connect.
+    """
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror as exc:
+        raise _PrivateAddressRefused(f"DNS resolution failed for {host}: {exc}") from exc
+    ips = sorted({info[4][0] for info in infos})
+    if not ips:
+        raise _PrivateAddressRefused(f"DNS returned no addresses for {host}")
+    for ip in ips:
+        if not _is_public_ip(ip):
+            raise _PrivateAddressRefused(
+                f"refusing to fetch {host}: resolves to non-public address {ip}"
+            )
+    return ips
+
+
+def _safe_get(url: str, **kwargs) -> httpx.Response:
+    """`httpx.get` that refuses private/loopback/link-local destinations.
+
+    Disabled when ``allow_private_targets`` is set in config (self-hosted
+    intranet verification).
+    """
+    if get_settings().allow_private_targets:
+        return httpx.get(url, **kwargs)
+    parsed = urlparse(url)
+    if parsed.hostname is None:
+        raise _PrivateAddressRefused(f"URL has no hostname: {url}")
+    # Pre-resolve and refuse if any answer is non-public. We then let httpx
+    # do its own resolution; the small TOCTOU window is acceptable given
+    # that follow_redirects is False on the verification path and the
+    # response body itself is the only signal that flows back to the user.
+    _resolve_public_ips(parsed.hostname)
+    return httpx.get(url, **kwargs)
 
 
 def new_token() -> str:
@@ -65,7 +128,7 @@ def _verify_http_file(hostname: str, token: str) -> tuple[bool, str]:
     for scheme in ("https", "http"):
         url = f"{scheme}://{hostname}{path}"
         try:
-            r = httpx.get(url, timeout=HTTP_TIMEOUT, follow_redirects=False)
+            r = _safe_get(url, timeout=HTTP_TIMEOUT, follow_redirects=False)
         except httpx.HTTPError:
             continue
         if r.status_code == 200 and r.text.strip() == token:
@@ -87,7 +150,9 @@ def _verify_http_header(hostname: str, token: str) -> tuple[bool, str]:
     for scheme in ("https", "http"):
         url = f"{scheme}://{hostname}/"
         try:
-            r = httpx.get(url, timeout=HTTP_TIMEOUT, follow_redirects=True)
+            # follow_redirects=False to keep the SSRF guard meaningful — a
+            # public host could otherwise 302 us at 169.254.169.254.
+            r = _safe_get(url, timeout=HTTP_TIMEOUT, follow_redirects=False)
         except httpx.HTTPError:
             continue
         if r.headers.get(HEADER_NAME) == token:
