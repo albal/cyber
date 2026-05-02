@@ -1,0 +1,39 @@
+{{- if .Values.nucleiTemplates.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "cyberscan.fullname" . }}-nuclei-templates-update
+  labels: {{ include "cyberscan.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.nucleiTemplates.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          securityContext: {{ toYaml .Values.podSecurityContext | nindent 12 }}
+          containers:
+            - name: update
+              image: {{ include "cyberscan.image" (dict "name" .Values.workers.feeds.image.name "Values" .Values) }}
+              imagePullPolicy: {{ .Values.global.image.pullPolicy }}
+              command: ["sh", "-c"]
+              args:
+                - |
+                  set -e
+                  mkdir -p /shared/nuclei-templates
+                  nuclei -update-templates -ud /shared/nuclei-templates -silent
+                  echo "templates refreshed: $(find /shared/nuclei-templates -name '*.yaml' | wc -l) yaml files"
+              volumeMounts:
+                - name: templates
+                  mountPath: /shared/nuclei-templates
+              resources:
+                requests: { cpu: 100m, memory: 256Mi }
+                limits:   { cpu: 500m, memory: 512Mi }
+          volumes:
+            - name: templates
+              persistentVolumeClaim:
+                claimName: {{ include "cyberscan.fullname" . }}-nuclei-templates
+{{- end }}

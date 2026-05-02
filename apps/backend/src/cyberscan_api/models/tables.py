@@ -36,6 +36,7 @@ class ScanStatus(str, enum.Enum):
     completed = "completed"
     failed = "failed"
     partial = "partial"
+    cancelled = "cancelled"
 
 
 class Severity(str, enum.Enum):
@@ -101,6 +102,10 @@ class Asset(Base):
     last_scheduled_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+    # When True, the recon stage runs subfinder against the hostname and feeds
+    # discovered subdomains into the crawler/Nuclei pipeline as additional seeds.
+    enumerate_subdomains: Mapped[bool] = mapped_column(default=False)
 
     created_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

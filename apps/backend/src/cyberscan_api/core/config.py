@@ -27,6 +27,11 @@ class Settings(BaseSettings):
     # Comma-separated origins, or '*' to allow any (allow_credentials forced false in that case).
     cors_origins: str = Field(default="*")
 
+    # Login rate-limit. 5 attempts / 5min by default. The bucket is keyed
+    # by IP + email so a stuffer can't lock out a target from many IPs.
+    login_rate_max_attempts: int = Field(default=5)
+    login_rate_window_s: int = Field(default=300)
+
     # OIDC: when oidc_issuer is set, the backend additionally accepts bearer
     # JWTs signed by that issuer (verified via its JWKS). Users are provisioned
     # on first sign-in into the tenant whose slug matches `oidc_default_tenant`.

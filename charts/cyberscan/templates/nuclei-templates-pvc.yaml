@@ -1,0 +1,19 @@
+{{- if .Values.nucleiTemplates.enabled }}
+# Shared volume that holds the latest nuclei-templates checkout. The
+# CronJob below refreshes it on schedule; every worker pool mounts it
+# read-only at /root/nuclei-templates so detections stay current
+# without rolling the worker deployments.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "cyberscan.fullname" . }}-nuclei-templates
+spec:
+  accessModes:
+    - {{ .Values.nucleiTemplates.persistence.accessMode | default "ReadWriteMany" | quote }}
+  resources:
+    requests:
+      storage: {{ .Values.nucleiTemplates.persistence.size | default "1Gi" }}
+  {{- with .Values.nucleiTemplates.persistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+{{- end }}

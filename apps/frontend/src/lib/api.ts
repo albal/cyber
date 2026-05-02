@@ -94,6 +94,7 @@ export interface Asset {
   schedule_cron: string | null;
   schedule_enabled: boolean;
   last_scheduled_at: string | null;
+  enumerate_subdomains: boolean;
   created_at: string;
 }
 

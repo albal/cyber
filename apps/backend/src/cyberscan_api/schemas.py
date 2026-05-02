@@ -34,6 +34,12 @@ class AssetSchedule(BaseModel):
     schedule_enabled: bool = False
 
 
+class AssetUpdate(BaseModel):
+    """PATCH-style partial update (currently only enumerate_subdomains)."""
+
+    enumerate_subdomains: bool | None = None
+
+
 class AssetOut(BaseModel):
     model_config = ConfigDict(from_attributes=True, use_enum_values=True)
     id: uuid.UUID
@@ -47,6 +53,7 @@ class AssetOut(BaseModel):
     schedule_cron: str | None
     schedule_enabled: bool
     last_scheduled_at: datetime | None
+    enumerate_subdomains: bool
     created_at: datetime
 
 
