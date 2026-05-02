@@ -83,12 +83,21 @@ jobs:
             echo "version=${base}-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Stamp Chart.yaml with release version
+        # Rewrite Chart.yaml in-place so anyone reading the artifact
+        # (helm pull, OCI inspect, helm show chart) sees the tag version,
+        # not the stub "0.1.0". The change is local to the runner — we
+        # don't push it back to the repo.
+        run: |
+          ver="${{ steps.chartver.outputs.version }}"
+          sed -i -E "s/^version:[[:space:]]+.*/version: ${ver}/" charts/cyberscan/Chart.yaml
+          sed -i -E "s/^appVersion:[[:space:]]+.*/appVersion: \"${ver}\"/" charts/cyberscan/Chart.yaml
+          echo "--- Chart.yaml after stamp ---"
+          grep -E '^(version|appVersion):' charts/cyberscan/Chart.yaml
+
       - name: helm package
         run: |
-          helm package charts/cyberscan \
-            --version "${{ steps.chartver.outputs.version }}" \
-            --app-version "${{ steps.chartver.outputs.version }}" \
-            --destination /tmp
+          helm package charts/cyberscan --destination /tmp
 
       - name: Login to GHCR for OCI
         run: |
