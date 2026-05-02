@@ -13,7 +13,11 @@ helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
 {{- $r := .Values.global.image.registry -}}
 {{- $repo := .Values.global.image.repository -}}
 {{- $tag := .Values.global.image.tag -}}
-{{- printf "%s/%s/%s:%s" $r $repo .name $tag -}}
+{{- $parts := list -}}
+{{- if $r }}{{- $parts = append $parts $r -}}{{- end -}}
+{{- if $repo }}{{- $parts = append $parts $repo -}}{{- end -}}
+{{- $parts = append $parts .name -}}
+{{- printf "%s:%s" (join "/" $parts) $tag -}}
 {{- end -}}
 
 {{- define "cyberscan.dbUrl" -}}
