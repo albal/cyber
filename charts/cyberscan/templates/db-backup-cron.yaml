@@ -1,0 +1,74 @@
+{{- if .Values.dbBackup.enabled }}
+# Scheduled pg_dump → MinIO. Retention is enforced by an mc lifecycle
+# rule on the artifacts bucket (see runbook). Failures are emailed via
+# notification channels if you've added an 'email' channel.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "cyberscan.fullname" . }}-db-backup
+  labels: {{ include "cyberscan.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.dbBackup.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: OnFailure
+          securityContext: {{ toYaml .Values.podSecurityContext | nindent 12 }}
+          containers:
+            - name: backup
+              image: {{ .Values.dbBackup.image | default "minio/mc:RELEASE.2024-11-21T17-21-54Z" | quote }}
+              command: ["sh", "-c"]
+              args:
+                - |
+                  set -euo pipefail
+                  apk add --no-cache postgresql-client gzip || true
+                  ts=$(date -u +%Y%m%dT%H%M%SZ)
+                  out="/tmp/cyberscan-${ts}.sql.gz"
+                  echo "running pg_dump → ${out}"
+                  PGPASSWORD="${POSTGRES_PASSWORD}" pg_dump \
+                    -h "${POSTGRES_HOST}" -U "${POSTGRES_USER}" "${POSTGRES_DB}" \
+                    | gzip -9 > "${out}"
+                  echo "configuring mc"
+                  mc alias set archive "${S3_ENDPOINT}" "${S3_ACCESS_KEY}" "${S3_SECRET_KEY}"
+                  mc mb -p "archive/${S3_BUCKET_BACKUPS}" || true
+                  mc cp "${out}" "archive/${S3_BUCKET_BACKUPS}/cyberscan-${ts}.sql.gz"
+                  echo "uploaded $(du -h ${out} | cut -f1) to ${S3_BUCKET_BACKUPS}"
+              env:
+                - name: POSTGRES_HOST
+                  value: {{ printf "%s-postgresql" .Release.Name | quote }}
+                - name: POSTGRES_USER
+                  value: {{ .Values.postgresql.auth.username | quote }}
+                - name: POSTGRES_DB
+                  value: {{ .Values.postgresql.auth.database | quote }}
+                - name: POSTGRES_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "cyberscan.fullname" . }}-app
+                      key: POSTGRES_PASSWORD
+                      optional: true
+                - name: S3_ENDPOINT
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "cyberscan.fullname" . }}-app
+                      key: S3_ENDPOINT
+                - name: S3_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "cyberscan.fullname" . }}-app
+                      key: S3_ACCESS_KEY
+                - name: S3_SECRET_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "cyberscan.fullname" . }}-app
+                      key: S3_SECRET_KEY
+                - name: S3_BUCKET_BACKUPS
+                  value: {{ .Values.dbBackup.bucket | default "cyberscan-backups" | quote }}
+              resources:
+                requests: { cpu: 100m, memory: 256Mi }
+                limits:   { cpu: 500m, memory: 1Gi }
+{{- end }}

@@ -18,6 +18,7 @@ from cyberscan_api.schemas import (
     AssetCredentialMeta,
     AssetOut,
     AssetSchedule,
+    AssetUpdate,
     VerificationInstructions,
 )
 from cyberscan_api.services import verification
@@ -93,6 +94,37 @@ def get_verification_instructions(
             asset.verification_method, asset.hostname, asset.verification_token
         ),
     )
+
+
+@router.patch("/{asset_id}", response_model=AssetOut)
+def patch_asset(
+    asset_id: uuid.UUID,
+    payload: AssetUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(Role.analyst)),
+) -> Asset:
+    """Partial-update an asset's settings (currently only enumerate_subdomains)."""
+    asset = db.get(Asset, asset_id)
+    if not asset:
+        raise HTTPException(status_code=404, detail="asset not found")
+    changed: dict[str, object] = {}
+    if payload.enumerate_subdomains is not None:
+        asset.enumerate_subdomains = payload.enumerate_subdomains
+        changed["enumerate_subdomains"] = payload.enumerate_subdomains
+    if changed:
+        db.add(
+            AuditLog(
+                tenant_id=user.tenant_id,
+                actor_user_id=user.id,
+                action="asset.update",
+                target_type="asset",
+                target_id=str(asset.id),
+                details=changed,
+            )
+        )
+    db.commit()
+    db.refresh(asset)
+    return asset
 
 
 @router.put("/{asset_id}/schedule", response_model=AssetOut)

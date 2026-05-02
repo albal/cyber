@@ -102,6 +102,26 @@ zap:
     requests: { cpu: 250m, memory: 1Gi }
     limits:   { cpu: 1500m, memory: 2Gi }
 
+nucleiTemplates:
+  # When enabled, a CronJob pulls fresh nuclei-templates into a shared PVC,
+  # which every worker pool mounts read-only at /root/nuclei-templates.
+  # Detections stay current without rolling worker pods.
+  enabled: false
+  schedule: "30 3 * * *"   # daily at 03:30 UTC
+  persistence:
+    size: 1Gi
+    accessMode: ReadWriteMany   # ReadWriteOnce works only with a single worker replica
+    storageClass: ""
+
+dbBackup:
+  # Scheduled pg_dump → MinIO. Off by default so the chart works without
+  # an external storage backend; turn on when MinIO has lifecycle rules
+  # configured for retention.
+  enabled: false
+  schedule: "0 2 * * *"    # daily at 02:00 UTC
+  bucket: "cyberscan-backups"
+  image: "minio/mc:RELEASE.2024-11-21T17-21-54Z"
+
 notifications:
   smtp:
     host: ""

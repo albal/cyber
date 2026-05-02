@@ -24,7 +24,7 @@ from cyberscan_worker.feeds import epss
 from cyberscan_worker.feeds.store import get_cve, is_kev
 from cyberscan_worker.notify.dispatcher import ScanSummary, dispatch
 from cyberscan_worker.passive import zap_baseline
-from cyberscan_worker.recon import httpx_probe, katana, naabu
+from cyberscan_worker.recon import httpx_probe, katana, naabu, subfinder
 from cyberscan_worker.risk import RiskInputs, composite_score, dedupe_key, severity_for
 from cyberscan_worker.tls import sslyze_runner
 from cyberscan_worker.vuln import nuclei
@@ -104,18 +104,23 @@ def _set_state(
     db.commit()
 
 
+class ScanCancelled(Exception):
+    """Raised between stages when the scans row has been flipped to 'cancelled'."""
+
+
 def _load_scan_meta(db: Session, scan_id: str):
-    """Returns (tenant_id, asset_id, asset_name, target_url, hostname,
-    cred_kind, cred_ciphertext) — last two may be None when no credentials
-    are set on the asset."""
+    """Returns a 9-tuple: tenant_id, asset_id, asset_name, target_url,
+    hostname, cred_kind, cred_ciphertext, enumerate_subdomains, current_status."""
     row = db.execute(
         text(
             """
             SELECT s.tenant_id::text AS tenant_id,
+                   s.status::text AS status,
                    a.id::text AS asset_id,
                    a.name AS asset_name,
                    a.target_url,
                    a.hostname,
+                   a.enumerate_subdomains,
                    c.kind AS cred_kind,
                    c.secret_ciphertext AS cred_ciphertext
               FROM scans s
@@ -136,7 +141,20 @@ def _load_scan_meta(db: Session, scan_id: str):
         row.hostname,
         row.cred_kind,
         row.cred_ciphertext,
+        bool(row.enumerate_subdomains),
+        row.status,
     )
+
+
+def _check_cancelled(db: Session, scan_id: str) -> None:
+    """Re-read scan status. If a user has flipped it to 'cancelled', bail out
+    by raising ScanCancelled — the outer task handler marks the scan and
+    finishes cleanly without trying to set status back to 'failed'."""
+    row = db.execute(
+        text("SELECT status::text FROM scans WHERE id = :id"), {"id": scan_id}
+    ).first()
+    if row and row.status == "cancelled":
+        raise ScanCancelled()
 
 
 def _previous_dedupe_keys(db: Session, asset_id: str, current_scan_id: str) -> set[str]:
@@ -177,8 +195,15 @@ def run_scan(  # type: ignore[no-untyped-def]
             hostname,
             cred_kind,
             cred_ciphertext,
+            enumerate_subdomains,
+            current_status,
         ) = _load_scan_meta(db, scan_id)
         tid = tenant_id or meta_tenant
+
+        # The user may have already cancelled before the worker picked up.
+        if current_status == "cancelled":
+            log.info("scan %s was cancelled before recon started", scan_id)
+            return {"cancelled": True}
 
         # Decrypt asset credentials (if any) into ScannerAuth. Decryption
         # failures are logged and treated as "no auth" — never fatal.
@@ -200,12 +225,24 @@ def run_scan(  # type: ignore[no-untyped-def]
         )
 
         try:
+            # Stage 0: subdomain enumeration (opt-in per asset). Discovered
+            # subdomains are added as additional crawl seeds for the next stage.
+            subdomains: list[str] = [hostname]
+            if enumerate_subdomains:
+                _set_state(db, scan_id, status="running", stage="subfinder", progress=4)
+                _check_cancelled(db, scan_id)
+                subdomains = subfinder.run(hostname, timeout_s=60)
+                log.info("subfinder: discovered %d subdomain(s) for %s", len(subdomains), hostname)
+
             # Stage 1: port discovery + service fingerprint
+            _check_cancelled(db, scan_id)
             ports = naabu.run(hostname, top_ports="1000", timeout_s=120)
             _set_state(db, scan_id, status="running", stage="recon", progress=15)
+            _check_cancelled(db, scan_id)
 
             host_port_targets = [f"{p.host}:{p.port}" for p in ports]
-            services = httpx_probe.run(host_port_targets or [hostname], timeout_s=120)
+            httpx_targets = host_port_targets or list(subdomains)
+            services = httpx_probe.run(httpx_targets, timeout_s=120)
             if not services:
                 services = httpx_probe.run([target_url], timeout_s=60)
 
@@ -213,8 +250,16 @@ def run_scan(  # type: ignore[no-untyped-def]
             # which on SPAs (Angular/React) misses every API endpoint. Katana
             # walks links, parses JS bundles + source maps, and follows
             # known-files (robots.txt, sitemap.xml).
+            _check_cancelled(db, scan_id)
             _set_state(db, scan_id, status="running", stage="crawl", progress=22)
             crawl_seeds = [svc.url for svc in services if svc.url.startswith("http")] or [target_url]
+            # When subdomain enum ran, also seed the crawler with each discovered host.
+            if enumerate_subdomains and len(subdomains) > 1:
+                scheme = "https://" if any(svc.tls for svc in services) else "http://"
+                for sub in subdomains:
+                    seed = f"{scheme}{sub}"
+                    if seed not in crawl_seeds:
+                        crawl_seeds.append(seed)
             depth = s.crawl_depth_intrusive if intrusive else s.crawl_depth
             crawled = katana.run(
                 crawl_seeds,
@@ -226,6 +271,7 @@ def run_scan(  # type: ignore[no-untyped-def]
             )
             log.info("crawl: %d url(s) discovered (seeds=%d)", len(crawled), len(crawl_seeds))
 
+            _check_cancelled(db, scan_id)
             _set_state(db, scan_id, status="running", stage="vuln", progress=30)
 
             # Stage 2a: nuclei (sharded). Default tag set covers CVEs, exposures,
@@ -261,6 +307,7 @@ def run_scan(  # type: ignore[no-untyped-def]
                 )
 
             # Stage 2b: TLS deep inspection on each TLS endpoint
+            _check_cancelled(db, scan_id)
             _set_state(db, scan_id, status="running", stage="tls", progress=70)
             tls_hits: list[sslyze_runner.TlsHit] = []
             tls_targets = {(p.host, p.port) for p in ports if p.port in (443, 8443)} or {(hostname, 443)}
@@ -268,6 +315,7 @@ def run_scan(  # type: ignore[no-untyped-def]
                 tls_hits.extend(sslyze_runner.run(host, port=port, timeout_s=60))
 
             # Stage 2c: passive (ZAP baseline / fallback header check)
+            _check_cancelled(db, scan_id)
             _set_state(db, scan_id, status="running", stage="passive", progress=80)
             passive_hits: list[zap_baseline.PassiveHit] = []
             passive_targets = list({svc.url for svc in services if svc.url.startswith("http")})
@@ -278,6 +326,7 @@ def run_scan(  # type: ignore[no-untyped-def]
                     zap_baseline.run(url, timeout_s=600 if intrusive else 300, intrusive=intrusive)
                 )
 
+            _check_cancelled(db, scan_id)
             _set_state(db, scan_id, status="running", stage="consolidate", progress=90)
 
             # Stage 3: enrich + score + persist
@@ -502,6 +551,14 @@ def run_scan(  # type: ignore[no-untyped-def]
             log.info("run_scan done scan_id=%s summary=%s", scan_id, summary)
             return summary
 
+        except ScanCancelled:
+            log.info("scan %s cancelled by user", scan_id)
+            _set_state(
+                db, scan_id,
+                status="cancelled", stage="cancelled", progress=100,
+                finished_at=datetime.now(UTC), error=None,
+            )
+            return {"cancelled": True}
         except Exception as exc:  # noqa: BLE001
             log.exception("scan failed: %s", exc)
             _set_state(

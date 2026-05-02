@@ -35,7 +35,20 @@ spec:
           securityContext:
             capabilities:
               add: ["NET_RAW"]   # naabu SYN scans
+          {{- if $.Values.nucleiTemplates.enabled }}
+          volumeMounts:
+            - name: nuclei-templates
+              mountPath: /root/nuclei-templates
+              readOnly: true
+          {{- end }}
           resources: {{ toYaml $cfg.resources | nindent 12 }}
+      {{- if $.Values.nucleiTemplates.enabled }}
+      volumes:
+        - name: nuclei-templates
+          persistentVolumeClaim:
+            claimName: {{ include "cyberscan.fullname" $ }}-nuclei-templates
+            readOnly: true
+      {{- end }}
 ---
 {{- end }}
 {{- end }}

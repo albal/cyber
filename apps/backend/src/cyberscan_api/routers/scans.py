@@ -103,6 +103,45 @@ def get_scan(
     return scan
 
 
+_TERMINAL = {"completed", "failed", "partial", "cancelled"}
+
+
+@router.post("/scans/{scan_id}/cancel", response_model=ScanOut)
+def cancel_scan(
+    scan_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(Role.analyst)),
+) -> Scan:
+    """Mark a queued or running scan as cancelled.
+
+    The worker checks scans.status between stages and bails out cleanly
+    when it sees 'cancelled'. If the scan is already terminal we return 409.
+    """
+    scan = db.get(Scan, scan_id)
+    if not scan:
+        raise HTTPException(status_code=404, detail="scan not found")
+    if scan.status.value in _TERMINAL:
+        raise HTTPException(
+            status_code=409,
+            detail=f"scan is already {scan.status.value}; nothing to cancel",
+        )
+    scan.status = "cancelled"  # type: ignore[assignment]
+    scan.error = "cancelled by user"
+    scan.finished_at = datetime.now(UTC)
+    db.add(
+        AuditLog(
+            tenant_id=user.tenant_id,
+            actor_user_id=user.id,
+            action="scan.cancel",
+            target_type="scan",
+            target_id=str(scan.id),
+        )
+    )
+    db.commit()
+    db.refresh(scan)
+    return scan
+
+
 @router.get("/scans/{scan_id}/findings", response_model=list[FindingOut])
 def list_findings(
     scan_id: uuid.UUID,

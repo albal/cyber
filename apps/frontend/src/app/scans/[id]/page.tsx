@@ -91,24 +91,42 @@ export default function ScanDetailPage() {
             <div className="h-full bg-accent" style={{ width: `${scan.progress}%` }} />
           </div>
         </div>
-        {scan.status === "completed" && (
-          <div className="flex gap-2 mt-1">
-            <a
-              href={`/api/v1/scans/${id}/findings.csv`}
-              className="rounded border border-border px-3 py-2 text-xs"
-              download
+        <div className="flex gap-2 mt-1">
+          {["queued", "running"].includes(scan.status) && (
+            <button
+              onClick={async () => {
+                if (!confirm("Cancel this scan? Findings already collected will be retained.")) return;
+                try {
+                  const updated = await api<Scan>(`/api/v1/scans/${id}/cancel`, { method: "POST" });
+                  setScan(updated);
+                } catch (e) {
+                  alert(e instanceof Error ? e.message : "cancel failed");
+                }
+              }}
+              className="rounded border border-critical/50 text-critical px-3 py-2 text-xs"
             >
-              Export CSV
-            </a>
-            <a
-              href={`/api/v1/scans/${id}/findings.json`}
-              className="rounded border border-border px-3 py-2 text-xs"
-              download
-            >
-              Export JSON
-            </a>
-          </div>
-        )}
+              Cancel scan
+            </button>
+          )}
+          {scan.status === "completed" && (
+            <>
+              <a
+                href={`/api/v1/scans/${id}/findings.csv`}
+                className="rounded border border-border px-3 py-2 text-xs"
+                download
+              >
+                Export CSV
+              </a>
+              <a
+                href={`/api/v1/scans/${id}/findings.json`}
+                className="rounded border border-border px-3 py-2 text-xs"
+                download
+              >
+                Export JSON
+              </a>
+            </>
+          )}
+        </div>
       </header>
 
       {scan.error && (

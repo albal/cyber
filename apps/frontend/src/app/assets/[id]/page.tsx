@@ -186,6 +186,24 @@ export default function AssetDetailPage() {
             />
             Intrusive (active) scan — requires re-verify within 7 days
           </label>
+          <label className="flex items-center gap-2 text-sm text-gray-300">
+            <input
+              type="checkbox"
+              checked={asset.enumerate_subdomains}
+              onChange={async (e) => {
+                try {
+                  const updated = await api<Asset>(`/api/v1/assets/${id}`, {
+                    method: "PATCH",
+                    body: JSON.stringify({ enumerate_subdomains: e.target.checked }),
+                  });
+                  setAsset(updated);
+                } catch (err) {
+                  setErr(err instanceof Error ? err.message : "update failed");
+                }
+              }}
+            />
+            Enumerate subdomains (subfinder)
+          </label>
           <button
             onClick={startScan}
             disabled={busy || asset.verification_status !== "verified"}
