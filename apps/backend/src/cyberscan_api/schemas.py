@@ -135,3 +135,43 @@ class ApiTokenCreated(ApiTokenOut):
     """Returned once at creation; includes the plaintext token. Never persisted."""
 
     token: str
+
+
+# ---------- Asset credentials (authenticated scans) --------------------------
+
+
+class AssetCredentialCookie(BaseModel):
+    kind: str = Field(default="cookie", pattern="^cookie$")
+    label: str | None = Field(default=None, max_length=255)
+    cookie_header: str = Field(min_length=1, max_length=8192)
+
+
+class AssetCredentialBearer(BaseModel):
+    kind: str = Field(default="bearer", pattern="^bearer$")
+    label: str | None = Field(default=None, max_length=255)
+    token: str = Field(min_length=1, max_length=8192)
+
+
+class AssetCredentialBasic(BaseModel):
+    kind: str = Field(default="basic", pattern="^basic$")
+    label: str | None = Field(default=None, max_length=255)
+    username: str = Field(min_length=1, max_length=512)
+    password: str = Field(min_length=1, max_length=2048)
+
+
+class AssetCredentialHeader(BaseModel):
+    kind: str = Field(default="header", pattern="^header$")
+    label: str | None = Field(default=None, max_length=255)
+    name: str = Field(min_length=1, max_length=255)
+    value: str = Field(min_length=1, max_length=8192)
+
+
+class AssetCredentialMeta(BaseModel):
+    """Returned by GET — never includes the plaintext secret."""
+
+    model_config = ConfigDict(from_attributes=True)
+    id: uuid.UUID
+    asset_id: uuid.UUID
+    kind: str
+    label: str | None
+    created_at: datetime

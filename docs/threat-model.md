@@ -7,14 +7,15 @@ under **Out of scope** so reviewers see the gap explicitly.
 
 ## In-scope assets
 
-| Asset                         | Why it matters |
-| ----------------------------- | -------------- |
-| Scan findings (CVE list)      | Discloses customers' vulnerable surface; high-value to attackers. |
+| Asset | Why it matters |
+| --- | --- |
+| Scan findings (CVE list) | Discloses customers' vulnerable surface; high-value to attackers. |
 | Vulnerability feeds (CVE/KEV/EPSS/OSV) | Public data — integrity matters more than confidentiality. |
-| Asset ownership tokens        | Possession proves a customer owns a target; theft enables unauthorized scanning. |
-| Notification webhooks         | Slack / Teams URLs are bearer-secret. |
-| API tokens                    | `cyb_*` long-lived bearer tokens for CI/CD; equivalent to a session JWT. |
-| Audit log                     | Required for SOC2 evidence; tampering hides attacker actions. |
+| Asset ownership tokens | Possession proves a customer owns a target; theft enables unauthorized scanning. |
+| Notification webhooks | Slack / Teams URLs are bearer-secret. |
+| API tokens | `cyb_*` long-lived bearer tokens for CI/CD; equivalent to a session JWT. |
+| Asset credentials | Cookie / bearer / basic / custom-header creds the scanner attaches. Encrypted at rest with Fernet keyed off `API_SECRET_KEY`. |
+| Audit log | Required for SOC2 evidence; tampering hides attacker actions. |
 
 ## Actors
 
@@ -29,7 +30,7 @@ under **Out of scope** so reviewers see the gap explicitly.
 
 ## Trust boundaries
 
-```
+```text
 [ Internet ] ──► [ Ingress / TLS ] ──► [ frontend ] ──► [ backend ]
                                                             │
                             ┌───────────── enqueue ─────────┤
@@ -51,12 +52,14 @@ the one **outbound** flow to untrusted networks.
 ## Controls
 
 ### Authentication
+
 - Local JWT for browser sessions; bcrypt-hashed passwords.
 - API tokens are SHA-256-hashed at rest; plaintext shown once.
 - OIDC (optional): JWTs from `OIDC_ISSUER` are verified via JWKS;
   users are auto-provisioned into the `OIDC_DEFAULT_TENANT` tenant.
 
 ### Authorization
+
 - Roles enforced via `require_role()` on write endpoints.
 - `viewer` cannot create assets, scans, channels, or tokens.
 - `analyst` and above can verify, scan, and edit schedules.
@@ -64,9 +67,10 @@ the one **outbound** flow to untrusted networks.
 - `owner` is reserved for the seeded admin (and any role-claim'd OIDC user).
 
 ### Tenant isolation
+
 - Every tenant-scoped table (assets, scans, findings, audit_log,
-  notification_channels, users, api_tokens) carries `tenant_id` (FK
-  to `tenants.id`, NOT NULL).
+  notification_channels, users, api_tokens, asset_credentials) carries
+  `tenant_id` (FK to `tenants.id`, NOT NULL).
 - All have `ROW LEVEL SECURITY` **forced** (migration 0004) so the policy
   applies even to the table owner.
 - Policy: `tenant_id = current_setting('app.tenant_id')` OR GUC unset
@@ -74,30 +78,43 @@ the one **outbound** flow to untrusted networks.
   `set_config('app.tenant_id', :tid, true)` (transaction-scoped).
 
 ### Asset-ownership verification
+
 - Three methods: `.well-known/cyberscan-<token>.txt`, DNS TXT, HTTP header.
 - Tokens are 24-byte URL-safe random.
 - **Verification expires after 90 days** (warned at 75; blocking at 90).
 - **Intrusive scans require re-verification within the last 7 days.**
 
 ### Active-scan gating
+
 - Default scans use Nuclei medium-severity-and-up + ZAP baseline (passive).
 - `intrusive=true` lifts the severity floor and runs `zap-full-scan.py`
   (active spider + active scan). Backend rejects the request unless
   `verified_at >= now() - 7 days`.
 
 ### Audit log
+
 - Append-only; no UPDATE/DELETE endpoints.
-- Captures: `asset.create`, `asset.verify`, `asset.schedule`, `scan.create`,
+- Captures: `asset.create`, `asset.verify`, `asset.schedule`,
+  `asset.credentials.set`, `asset.credentials.delete`, `scan.create`,
   `notification.create`, `notification.delete`, `token.create`,
   `token.revoke`.
 - Exposed as paged JSON, streaming CSV, and JSONL for SIEM ingest.
 
 ### Secret handling
+
 - Helm chart secret manifest carries DB DSN, Redis DSN, JWT secret, S3 creds,
   SMTP creds.
 - For Kubernetes deploys, set `externalSecrets.enabled=true` to mount via
   External Secrets Operator (Vault / cloud KMS).
 - `.env` is `.gitignore`d; `.env.example` is the template.
+- **Asset credentials** (cookie / bearer / basic / header) used for
+  authenticated scans are encrypted with Fernet (HKDF-SHA256 derived from
+  `API_SECRET_KEY`) before reaching the DB. The plaintext is decrypted in
+  the worker right before the scanner is invoked, never logged, and never
+  returned by GET (only `kind` + `label` + creation timestamp).
+- Rotating `API_SECRET_KEY` invalidates existing asset credentials —
+  decryption silently falls back to anonymous scanning with a log line.
+  Re-enter credentials via the UI after rotation.
 
 ## Out of scope (v1.0)
 

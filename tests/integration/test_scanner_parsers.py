@@ -287,3 +287,20 @@ def test_nuclei_default_tags_cover_common_categories():
     default = inspect.signature(nuclei.run).parameters["tags"].default
     expected = {"cve", "exposure", "misconfig", "tech", "default-login"}
     assert expected.issubset(set(default))
+
+
+def test_nuclei_run_signature_accepts_auth_params():
+    """Authenticated scans inject headers + cookie via run() kwargs."""
+    import inspect
+
+    params = inspect.signature(nuclei.run).parameters
+    assert "headers" in params
+    assert "cookie_header" in params
+
+
+def test_katana_run_signature_accepts_auth_params():
+    import inspect
+
+    params = inspect.signature(katana.run).parameters
+    assert "headers" in params
+    assert "cookie_header" in params

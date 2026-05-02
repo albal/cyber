@@ -203,6 +203,34 @@ class NotificationChannel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class AssetCredential(Base):
+    """Per-asset authentication for scanners (cookie / bearer / basic / header).
+
+    The plaintext secret is encrypted (Fernet) before reaching this row;
+    `secret_ciphertext` is the only on-disk form. Decryption happens in the
+    worker right before the scanner is invoked. The row is one-per-asset
+    (UNIQUE constraint on asset_id)."""
+
+    __tablename__ = "asset_credentials"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id"), index=True, nullable=False
+    )
+    asset_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("assets.id", ondelete="CASCADE"),
+        unique=True,
+        nullable=False,
+    )
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    label: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    secret_ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class ApiToken(Base):
     """Long-lived bearer token for CI/CD-style automation. The plaintext is
     only returned once on creation; we store sha256(token) so a compromised

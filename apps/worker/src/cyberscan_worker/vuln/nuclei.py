@@ -39,6 +39,8 @@ def run(
     ),
     timeout_s: int = 600,
     extra_args: list[str] | None = None,
+    headers: list[str] | None = None,
+    cookie_header: str | None = None,
 ) -> list[NucleiHit]:
     if not targets:
         return []
@@ -61,6 +63,10 @@ def run(
     ]
     if tags:
         cmd += ["-tags", ",".join(tags)]
+    for h in headers or []:
+        cmd += ["-H", h]
+    if cookie_header:
+        cmd += ["-H", f"Cookie: {cookie_header}"]
     if extra_args:
         cmd.extend(extra_args)
 

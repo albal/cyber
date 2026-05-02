@@ -5,9 +5,21 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from cyberscan_api.core.config import get_settings
+from cyberscan_api.core.crypto import encrypt_json
 from cyberscan_api.core.db import get_db
-from cyberscan_api.models import Asset, AuditLog, Role, User, VerificationStatus
-from cyberscan_api.schemas import AssetCreate, AssetOut, AssetSchedule, VerificationInstructions
+from cyberscan_api.models import Asset, AssetCredential, AuditLog, Role, User, VerificationStatus
+from cyberscan_api.schemas import (
+    AssetCreate,
+    AssetCredentialBasic,
+    AssetCredentialBearer,
+    AssetCredentialCookie,
+    AssetCredentialHeader,
+    AssetCredentialMeta,
+    AssetOut,
+    AssetSchedule,
+    VerificationInstructions,
+)
 from cyberscan_api.services import verification
 from cyberscan_api.services.auth_dep import get_current_user_or_token, require_role
 
@@ -157,3 +169,107 @@ def run_verification(
     if not ok:
         raise HTTPException(status_code=400, detail=f"verification failed: {reason}")
     return asset
+
+
+# ---------- Asset credentials (authenticated scans) --------------------------
+
+CredentialPayload = (
+    AssetCredentialCookie | AssetCredentialBearer | AssetCredentialBasic | AssetCredentialHeader
+)
+
+
+def _payload_to_secret(payload: CredentialPayload) -> dict:
+    """Strip metadata fields and return only the secret-bearing fields."""
+    if isinstance(payload, AssetCredentialCookie):
+        return {"cookie_header": payload.cookie_header}
+    if isinstance(payload, AssetCredentialBearer):
+        return {"token": payload.token}
+    if isinstance(payload, AssetCredentialBasic):
+        return {"username": payload.username, "password": payload.password}
+    return {"name": payload.name, "value": payload.value}
+
+
+@router.put("/{asset_id}/credentials", response_model=AssetCredentialMeta)
+def set_credentials(
+    asset_id: uuid.UUID,
+    payload: CredentialPayload,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(Role.analyst)),
+) -> AssetCredential:
+    """Store (or replace) authentication credentials for an asset.
+
+    The plaintext secret is encrypted with the application's secret key
+    (Fernet) before reaching the DB. Only the metadata (`kind`, `label`,
+    timestamps) is ever returned by GET.
+    """
+    asset = db.get(Asset, asset_id)
+    if not asset:
+        raise HTTPException(status_code=404, detail="asset not found")
+
+    secret = _payload_to_secret(payload)
+    cipher = encrypt_json(secret, secret=get_settings().api_secret_key)
+
+    existing = db.scalar(select(AssetCredential).where(AssetCredential.asset_id == asset_id))
+    if existing:
+        existing.kind = payload.kind
+        existing.label = payload.label
+        existing.secret_ciphertext = cipher
+        existing.created_by = user.id
+        cred = existing
+    else:
+        cred = AssetCredential(
+            tenant_id=user.tenant_id,
+            asset_id=asset_id,
+            created_by=user.id,
+            kind=payload.kind,
+            label=payload.label,
+            secret_ciphertext=cipher,
+        )
+        db.add(cred)
+
+    db.add(
+        AuditLog(
+            tenant_id=user.tenant_id,
+            actor_user_id=user.id,
+            action="asset.credentials.set",
+            target_type="asset",
+            target_id=str(asset_id),
+            # Never log the secret. Kind + label only.
+            details={"kind": payload.kind, "label": payload.label},
+        )
+    )
+    db.commit()
+    db.refresh(cred)
+    return cred
+
+
+@router.get("/{asset_id}/credentials", response_model=AssetCredentialMeta | None)
+def get_credentials_meta(
+    asset_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user_or_token),
+) -> AssetCredential | None:
+    """Return metadata only (kind, label, created_at). Never the secret."""
+    cred = db.scalar(select(AssetCredential).where(AssetCredential.asset_id == asset_id))
+    return cred  # may be None — Pydantic Optional handles it
+
+
+@router.delete("/{asset_id}/credentials", status_code=status.HTTP_204_NO_CONTENT)
+def delete_credentials(
+    asset_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(Role.analyst)),
+) -> None:
+    cred = db.scalar(select(AssetCredential).where(AssetCredential.asset_id == asset_id))
+    if cred is not None:
+        db.delete(cred)
+        db.add(
+            AuditLog(
+                tenant_id=user.tenant_id,
+                actor_user_id=user.id,
+                action="asset.credentials.delete",
+                target_type="asset",
+                target_id=str(asset_id),
+            )
+        )
+        db.commit()

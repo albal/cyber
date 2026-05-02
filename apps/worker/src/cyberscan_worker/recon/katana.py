@@ -35,8 +35,16 @@ def run(
     max_urls: int = 500,
     timeout_s: int = 180,
     headless: bool | None = None,
+    headers: list[str] | None = None,
+    cookie_header: str | None = None,
 ) -> list[CrawledUrl]:
-    """Crawl `seeds` and return a deduplicated list of discovered URLs."""
+    """Crawl `seeds` and return a deduplicated list of discovered URLs.
+
+    `headers` is a list of "Name: value" strings; `cookie_header` is a single
+    Cookie value (no name prefix). Both are forwarded to katana so the
+    authenticated parts of the target get crawled when an asset has stored
+    credentials.
+    """
     if not seeds:
         return []
     if not shutil.which("katana"):
@@ -59,6 +67,10 @@ def run(
     ]
     if headless:
         cmd += ["-headless", "-no-sandbox"]
+    for h in headers or []:
+        cmd += ["-H", h]
+    if cookie_header:
+        cmd += ["-H", f"Cookie: {cookie_header}"]
 
     log.info("katana: crawling %d seed(s) depth=%d headless=%s", len(seeds), depth, headless)
     try:

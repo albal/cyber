@@ -24,6 +24,7 @@ dependencies = [
   "websockets>=14",
   "croniter>=2.0",
   "reportlab>=4.0",
+  "cryptography>=42.0",
 ]
 
 [project.optional-dependencies]

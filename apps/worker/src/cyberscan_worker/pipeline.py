@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import uuid
 from datetime import UTC, datetime
 from urllib.parse import urlparse
@@ -103,7 +104,10 @@ def _set_state(
     db.commit()
 
 
-def _load_scan_meta(db: Session, scan_id: str) -> tuple[str, str, str, str, str]:
+def _load_scan_meta(db: Session, scan_id: str):
+    """Returns (tenant_id, asset_id, asset_name, target_url, hostname,
+    cred_kind, cred_ciphertext) — last two may be None when no credentials
+    are set on the asset."""
     row = db.execute(
         text(
             """
@@ -111,8 +115,12 @@ def _load_scan_meta(db: Session, scan_id: str) -> tuple[str, str, str, str, str]
                    a.id::text AS asset_id,
                    a.name AS asset_name,
                    a.target_url,
-                   a.hostname
-              FROM scans s JOIN assets a ON a.id = s.asset_id
+                   a.hostname,
+                   c.kind AS cred_kind,
+                   c.secret_ciphertext AS cred_ciphertext
+              FROM scans s
+              JOIN assets a ON a.id = s.asset_id
+              LEFT JOIN asset_credentials c ON c.asset_id = a.id
              WHERE s.id = :id
             """
         ),
@@ -120,7 +128,15 @@ def _load_scan_meta(db: Session, scan_id: str) -> tuple[str, str, str, str, str]
     ).first()
     if not row:
         raise RuntimeError(f"scan {scan_id} not found")
-    return row.tenant_id, row.asset_id, row.asset_name, row.target_url, row.hostname
+    return (
+        row.tenant_id,
+        row.asset_id,
+        row.asset_name,
+        row.target_url,
+        row.hostname,
+        row.cred_kind,
+        row.cred_ciphertext,
+    )
 
 
 def _previous_dedupe_keys(db: Session, asset_id: str, current_scan_id: str) -> set[str]:
@@ -153,8 +169,28 @@ def run_scan(  # type: ignore[no-untyped-def]
     with SessionLocal() as db:
         # First load happens with admin GUC so we can read scans across tenants.
         _set_tenant(db, "")
-        meta_tenant, asset_id, asset_name, target_url, hostname = _load_scan_meta(db, scan_id)
+        (
+            meta_tenant,
+            asset_id,
+            asset_name,
+            target_url,
+            hostname,
+            cred_kind,
+            cred_ciphertext,
+        ) = _load_scan_meta(db, scan_id)
         tid = tenant_id or meta_tenant
+
+        # Decrypt asset credentials (if any) into ScannerAuth. Decryption
+        # failures are logged and treated as "no auth" — never fatal.
+        from cyberscan_worker.auth.credentials import load_for_asset
+
+        scanner_auth = load_for_asset(
+            ciphertext=cred_ciphertext,
+            kind=cred_kind,
+            secret_key=os.environ.get("API_SECRET_KEY", "dev-secret-change-me"),
+        )
+        if not scanner_auth.is_empty():
+            log.info("scan %s: using stored %s credentials for authenticated scan", scan_id, cred_kind)
         _set_tenant(db, tid)
 
         _set_state(
@@ -185,6 +221,8 @@ def run_scan(  # type: ignore[no-untyped-def]
                 depth=depth,
                 max_urls=s.crawl_max_urls,
                 timeout_s=s.crawl_timeout_s,
+                headers=scanner_auth.headers or None,
+                cookie_header=scanner_auth.cookie_header,
             )
             log.info("crawl: %d url(s) discovered (seeds=%d)", len(crawled), len(crawl_seeds))
 
@@ -217,6 +255,8 @@ def run_scan(  # type: ignore[no-untyped-def]
                         tags=tags,
                         extra_args=extra_args,
                         timeout_s=900 if intrusive else 600,
+                        headers=scanner_auth.headers or None,
+                        cookie_header=scanner_auth.cookie_header,
                     )
                 )
 
@@ -425,6 +465,8 @@ def run_scan(  # type: ignore[no-untyped-def]
                 "ports_open": len(ports),
                 "services_seen": len(services),
                 "urls_crawled": len(crawled),
+                "authenticated": not scanner_auth.is_empty(),
+                "auth_kind": cred_kind if not scanner_auth.is_empty() else None,
                 "tls_findings": len(tls_hits),
                 "passive_findings": len(passive_hits),
                 "findings": findings_summary,

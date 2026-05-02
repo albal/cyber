@@ -4,7 +4,7 @@ What cyberscan can and cannot detect, and how to push the numbers higher.
 
 ## Pipeline at a glance
 
-```
+```text
 naabu (port discovery)
    │
    ▼
@@ -77,23 +77,57 @@ generic vulnerability scanner.
 ## Extending coverage
 
 ### 1. Bigger crawl
+
 Set `CRAWL_DEPTH=5` and `CRAWL_MAX_URLS=2000` for richer SPAs. Trade-off:
 crawl time grows roughly linearly.
 
 ### 2. JavaScript-rendered routes
+
 Set `KATANA_HEADLESS=1` in the worker env. Requires Chromium in the worker
 image (not bundled by default — image grows ~150MB). For most APIs the
 HTTP-only crawl plus JS-bundle parsing already finds the routes.
 
-### 3. Authenticated scans (v1.1)
-Coming: per-asset login config (cookie / OAuth flow) so the spider can
-explore behind login.
+### 3. Authenticated scans
+
+Configure per-asset auth from the UI (Asset detail → **Authentication**)
+or via the API:
+
+```bash
+# Cookie session
+curl -X PUT https://scan.example.com/api/v1/assets/<id>/credentials \
+  -H "Authorization: Bearer cyb_..." \
+  -H 'Content-Type: application/json' \
+  -d '{"kind":"cookie","label":"admin session","cookie_header":"session=abc; csrf=xyz"}'
+
+# Bearer token (OAuth, JWT, etc.)
+... -d '{"kind":"bearer","token":"eyJhbGc..."}'
+
+# HTTP Basic
+... -d '{"kind":"basic","username":"admin","password":"hunter2"}'
+
+# Custom header (e.g. X-API-Key)
+... -d '{"kind":"header","name":"X-API-Key","value":"k1"}'
+```
+
+The credential is encrypted at rest with Fernet keyed off `API_SECRET_KEY`.
+Decryption happens in the worker right before each scanner invocation; the
+plaintext is never logged or returned by GET (only `kind` + `label` + the
+creation timestamp are exposed). The crawler (katana) and Nuclei both
+attach the credential to every request, so JS-bundle endpoints, REST
+APIs, and admin paths are explored just like the unauthenticated home
+page would be.
+
+The scan summary includes `authenticated: true` and `auth_kind` once
+credentials are applied. A decryption failure (e.g., `API_SECRET_KEY`
+rotated) falls back to anonymous scanning with a log line, never fatal.
 
 ### 4. Custom Nuclei templates
+
 Mount a directory at `/root/nuclei-templates/custom/` in the worker; the
 default tag set picks them up automatically.
 
 ### 5. ZAP active by default
+
 Toggle `intrusive=true` on the scan. For Helm deploys, set
 `zap.enabled=true` so the passive worker pool talks to a daemonized ZAP
 on the cluster network.
