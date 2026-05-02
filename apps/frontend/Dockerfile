@@ -20,6 +20,7 @@ RUN addgroup --system --gid 10001 cyberscan \
 COPY --from=builder --chown=cyberscan:cyberscan /app/.next/standalone ./
 COPY --from=builder --chown=cyberscan:cyberscan /app/.next/static ./.next/static
 COPY --from=builder --chown=cyberscan:cyberscan /app/public ./public
-USER cyberscan:cyberscan
+# Numeric USER so Kubernetes' runAsNonRoot guard accepts the image.
+USER 10001:10001
 EXPOSE 3000
 CMD ["node", "server.js"]

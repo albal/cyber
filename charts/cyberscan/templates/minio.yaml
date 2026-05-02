@@ -1,0 +1,174 @@
+{{- if .Values.minio.enabled }}
+# Service name is `<release>-minio` to match S3_ENDPOINT in the app
+# secret and the historical Bitnami subchart.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-minio
+  labels: {{ include "cyberscan.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: tcp-api
+      port: {{ .Values.minio.service.apiPort | default 9000 }}
+      targetPort: api
+    - name: tcp-console
+      port: {{ .Values.minio.service.consolePort | default 9001 }}
+      targetPort: console
+  selector:
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/instance: {{ .Release.Name }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-minio
+  labels: {{ include "cyberscan.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  MINIO_ROOT_USER: {{ .Values.minio.auth.rootUser | quote }}
+  MINIO_ROOT_PASSWORD: {{ .Values.minio.auth.rootPassword | quote }}
+---
+{{- if .Values.minio.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-minio
+  labels: {{ include "cyberscan.labels" . | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- if .Values.minio.persistence.storageClass }}
+  storageClassName: {{ .Values.minio.persistence.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.minio.persistence.size }}
+---
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-minio
+  labels: {{ include "cyberscan.labels" . | nindent 4 }}
+spec:
+  # MinIO single-node uses local volumes; can't horizontally scale a
+  # standalone deployment without distributed mode. Pin to 1.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: minio
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: minio
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      securityContext:
+        # The official minio image runs as uid 1000.
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: minio
+          image: "{{ .Values.minio.image.repository }}:{{ .Values.minio.image.tag }}"
+          imagePullPolicy: {{ .Values.minio.image.pullPolicy }}
+          args: ["server", "/data", "--console-address", ":9001"]
+          envFrom:
+            - secretRef:
+                name: {{ .Release.Name }}-minio
+          ports:
+            - name: api
+              containerPort: 9000
+            - name: console
+              containerPort: 9001
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /minio/health/ready
+              port: api
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /minio/health/live
+              port: api
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources: {{ toYaml .Values.minio.resources | nindent 12 }}
+      volumes:
+        - name: data
+          {{- if .Values.minio.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-minio
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+{{- if .Values.minio.defaultBuckets }}
+---
+# Bucket bootstrap. The official MinIO image (unlike Bitnami) doesn't
+# accept a `MINIO_DEFAULT_BUCKETS` env var, so we bootstrap with a small
+# Job that mc-aliases and mc-mb's each bucket. Idempotent — `mc mb
+# --ignore-existing` is safe to re-run on upgrades.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-minio-mb
+  labels: {{ include "cyberscan.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 5
+  template:
+    spec:
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: mc
+          # `mc` releases on a different cadence to `minio/minio` and
+          # doesn't ship a tag matching the server's exact RELEASE; pick
+          # the most recent published tag we've verified exists.
+          image: "minio/mc:RELEASE.2025-08-13T08-35-41Z"
+          envFrom:
+            - secretRef:
+                name: {{ .Release.Name }}-minio
+          env:
+            # mc writes its config to $HOME/.mc; without an explicit HOME
+            # (and as a non-root user) it tries to mkdir /.mc which
+            # fails. /tmp is writable in the default emptyDir.
+            - name: HOME
+              value: /tmp
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              # Wait for MinIO to accept connections.
+              for i in $(seq 1 60); do
+                if mc alias set local http://{{ .Release.Name }}-minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null 2>&1; then
+                  echo "minio reachable after ${i} attempts"
+                  break
+                fi
+                sleep 2
+              done
+              # Create each bucket; --ignore-existing makes upgrades idempotent.
+              for b in $(echo "{{ .Values.minio.defaultBuckets }}" | tr ',' ' '); do
+                mc mb --ignore-existing "local/$b"
+              done
+{{- end }}
+{{- end }}

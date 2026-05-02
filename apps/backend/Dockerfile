@@ -15,7 +15,10 @@ COPY alembic ./alembic
 RUN pip install --upgrade pip && pip install -e .[dev] \
     && chown -R cyberscan:cyberscan /app
 
-USER cyberscan:cyberscan
+# Numeric USER so Kubernetes' runAsNonRoot guard accepts the image — the
+# kubelet refuses to start a container when it can't statically verify
+# that the configured user isn't uid 0.
+USER 10001:10001
 
 EXPOSE 8000
 CMD ["uvicorn", "cyberscan_api.main:app", "--host", "0.0.0.0", "--port", "8000"]

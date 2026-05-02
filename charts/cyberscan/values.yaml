@@ -2,12 +2,20 @@ global:
   image:
     registry: ghcr.io
     repository: cyberscan
-    tag: "0.1.0"
+    tag: "latest"
     pullPolicy: IfNotPresent
   domain: scan.example.com
   tls:
     enabled: false
     issuer: letsencrypt-prod
+  security:
+    # Bitnami subcharts hard-block any image not on `bitnami/*`. We've
+    # repointed them at `bitnamilegacy/*` (their archive registry — see
+    # the postgresql/redis/minio sections below), so we have to tell
+    # the subcharts that's intentional. The "insecure" name is a
+    # misnomer; these are the same SHAs the chart shipped with, just
+    # at a different path after Bitnami's late-2024 publishing change.
+    allowInsecureImages: true
 
 frontend:
   replicas: 1
@@ -144,31 +152,73 @@ ingress:
           pathType: Prefix
           service: backend
 
+# Postgres ships as a chart-local StatefulSet (templates/postgres.yaml)
+# using the official `postgres:18-alpine` image — chosen after Bitnami
+# archived their public image tags in late 2024.
+#
+# `postgresql.auth.*` keys are kept at this path so the cyberscan.dbUrl
+# helper and existing migrate Job continue to read them unchanged.
 postgresql:
   enabled: true
+  image:
+    repository: postgres
+    tag: "18-alpine"
+    pullPolicy: IfNotPresent
   auth:
     username: cyberscan
     password: cyberscan
     database: cyberscan
-  primary:
-    persistence:
-      size: 20Gi
+  service:
+    port: 5432
+  persistence:
+    enabled: true
+    size: 20Gi
+    storageClass: ""
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits:   { cpu: 1000m, memory: 1Gi }
 
+# Redis: chart-local StatefulSet, official `redis:8-alpine`. Service name
+# is kept at `<release>-redis-master` so cyberscan.redisUrl keeps working.
 redis:
   enabled: true
-  architecture: standalone
-  auth:
-    enabled: false
+  image:
+    repository: redis
+    tag: "8-alpine"
+    pullPolicy: IfNotPresent
+  service:
+    port: 6379
+  persistence:
+    enabled: true
+    size: 5Gi
+    storageClass: ""
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits:   { cpu: 500m, memory: 256Mi }
 
+# MinIO: chart-local Deployment, official `minio/minio` image. Service
+# name kept at `<release>-minio` to match the S3_ENDPOINT in the app
+# secret. Buckets are created lazily by the workers.
 minio:
   enabled: true
-  mode: standalone
+  image:
+    repository: minio/minio
+    tag: "RELEASE.2025-09-07T16-13-09Z-cpuv1"
+    pullPolicy: IfNotPresent
   auth:
     rootUser: cyberscan
     rootPassword: cyberscan-secret
+  service:
+    apiPort: 9000
+    consolePort: 9001
   defaultBuckets: "cyberscan-artifacts,cyberscan-feeds"
   persistence:
+    enabled: true
     size: 50Gi
+    storageClass: ""
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits:   { cpu: 1000m, memory: 1Gi }
 
 podSecurityContext:
   runAsNonRoot: true

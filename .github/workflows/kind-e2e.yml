@@ -72,7 +72,7 @@ jobs:
             --set workers.feeds.image.name=cyberscan-worker \
             --set beat.image.name=cyberscan-worker \
             --set backend.env.FEEDS_USE_FIXTURES="true" \
-            --wait --timeout 15m
+            --wait --timeout 5m
 
       - name: Show pods
         if: always()
@@ -94,9 +94,13 @@ jobs:
             sleep 2
           done
           curl -fsS http://localhost:18080/healthz | grep -q '"status":"ok"'
+          # The chart randomizes SEED_ADMIN_PASSWORD on each install, so
+          # pull it out of the secret rather than hard-coding "admin".
+          ADMIN_PW=$(kubectl -n cyberscan get secret cyberscan-cyberscan-app \
+            -o jsonpath='{.data.SEED_ADMIN_PASSWORD}' | base64 -d)
           # Login + list assets (should be empty initially)
           TOKEN=$(curl -fsS -X POST http://localhost:18080/api/v1/auth/login \
-            -d 'username=admin@example.com&password=admin' \
+            -d "username=admin@example.com&password=${ADMIN_PW}" \
             -H 'Content-Type: application/x-www-form-urlencoded' | python3 -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
           curl -fsS http://localhost:18080/api/v1/assets \
             -H "Authorization: Bearer $TOKEN" | python3 -m json.tool

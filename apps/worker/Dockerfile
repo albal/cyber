@@ -45,7 +45,8 @@ RUN pip install --upgrade pip && pip install -e .[dev]
 # templates into ~/.config/nuclei-templates by default; do this as the
 # runtime user so the cache lives in /home/cyberscan and is owned by it.
 RUN chown -R cyberscan:cyberscan /app /home/cyberscan
-USER cyberscan:cyberscan
+# Numeric USER so Kubernetes' runAsNonRoot guard accepts the image.
+USER 10001:10001
 RUN nuclei -update-templates -silent || true
 
 CMD ["celery", "-A", "cyberscan_worker.celery_app:celery_app", "worker", "--loglevel=info", "-Q", "recon,vuln,tls,passive,feeds"]
