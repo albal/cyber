@@ -12,7 +12,7 @@ ARG SUBFINDER_VERSION=2.6.7
 ARG TARGETARCH=amd64
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl unzip libpcap-dev \
+      ca-certificates curl unzip libpcap-dev libcap2-bin \
       build-essential libffi-dev libssl-dev \
     && rm -rf /var/lib/apt/lists/* \
     && set -eux; \
@@ -29,14 +29,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
        unzip -j subfinder.zip -d /usr/local/bin/ subfinder; \
        chmod +x /usr/local/bin/naabu /usr/local/bin/httpx /usr/local/bin/nuclei \
                 /usr/local/bin/katana /usr/local/bin/subfinder; \
-       rm -f /tmp/*.zip
+       # Grant naabu the raw-socket capability so SYN scans work as a
+       # non-root user. If the kernel/runtime doesn't honor file caps,
+       # naabu silently falls back to CONNECT scans — same as today.
+       setcap 'cap_net_raw,cap_net_admin+eip' /usr/local/bin/naabu || true; \
+       rm -f /tmp/*.zip \
+    && groupadd --system --gid 10001 cyberscan \
+    && useradd  --system --uid 10001 --gid cyberscan --home /home/cyberscan --create-home --shell /sbin/nologin cyberscan
 
 COPY src ./src
 COPY pyproject.toml ./
 RUN pip install --upgrade pip && pip install -e .[dev]
 
-# Pre-fetch nuclei templates at build time (cached layer)
+# Pre-fetch nuclei templates at build time (cached layer). Nuclei drops
+# templates into ~/.config/nuclei-templates by default; do this as the
+# runtime user so the cache lives in /home/cyberscan and is owned by it.
+RUN chown -R cyberscan:cyberscan /app /home/cyberscan
+USER cyberscan:cyberscan
 RUN nuclei -update-templates -silent || true
 
-ENV C_FORCE_ROOT=1
 CMD ["celery", "-A", "cyberscan_worker.celery_app:celery_app", "worker", "--loglevel=info", "-Q", "recon,vuln,tls,passive,feeds"]
