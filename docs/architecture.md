@@ -28,7 +28,7 @@ Five container roles in v0.1:
 | backend  | `cyberscan-backend`    | FastAPI + SQLAlchemy 2 + Alembic                       |
 | db       | `postgres:16-alpine`   | One DB; row-level tenant isolation lands in v0.2       |
 | queue    | `redis:7-alpine`       | Celery broker + result backend                         |
-| worker   | `cyberscan-worker`     | Bakes naabu, httpx, nuclei + nuclei-templates          |
+| worker   | `cyberscan-worker`     | Bakes scanner CLIs; sslyze runs from an isolated CLI venv |
 | (minio)  | `minio:latest`         | Artifact storage (raw scanner output, feed snapshots)  |
 
 `juice-shop` is included in `docker-compose.yml` as a benign in-network test target.
@@ -43,6 +43,7 @@ POST /api/v1/scans
         └─► naabu  (top 1000 ports)
         └─► httpx  (service fingerprint)
         └─► nuclei (sharded by 4 across discovered URLs)
+        └─► sslyze CLI subprocess (TLS checks)
         └─► consolidate
               ├─ enrich CVE → cvss/kev (postgres lookup)
               ├─ composite risk score (cvss·45% + epss·25% + kev·15% + exposure·10% + exploit·5%)

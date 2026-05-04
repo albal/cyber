@@ -12,7 +12,6 @@ dependencies = [
   "pydantic-settings>=2.6",
   "httpx>=0.28",
   "boto3>=1.35",
-  "sslyze>=6.0",
   "croniter>=2.0",
   "cryptography>=42.0",
 ]

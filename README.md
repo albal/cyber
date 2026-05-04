@@ -52,4 +52,5 @@ Phased delivery is documented in [docs/architecture.md](docs/architecture.md).
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE). Third-party scanner tools and template packs keep
+their own licenses; see [third_party/README.md](third_party/README.md).
