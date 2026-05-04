@@ -39,7 +39,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY src ./src
 COPY pyproject.toml ./
-RUN pip install --upgrade pip && pip install -e .[dev]
+RUN pip install --upgrade pip \
+    && pip install -e .[dev] \
+    && python -m venv /opt/sslyze \
+    && /opt/sslyze/bin/pip install --no-cache-dir "sslyze>=6.0" \
+    && ln -s /opt/sslyze/bin/sslyze /usr/local/bin/sslyze
 
 # Pre-fetch nuclei templates at build time (cached layer). Nuclei drops
 # templates into ~/.config/nuclei-templates by default; do this as the

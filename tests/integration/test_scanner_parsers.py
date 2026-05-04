@@ -1,4 +1,4 @@
-"""Pure-function parsers for naabu / httpx / nuclei JSONL output."""
+"""Pure-function parsers for scanner JSON/JSONL output."""
 import json
 import sys
 from pathlib import Path
@@ -6,6 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "apps" / "worker" / "src"))
 
 from cyberscan_worker.recon import httpx_probe, katana, naabu  # noqa: E402
+from cyberscan_worker.tls import sslyze_runner  # noqa: E402
 from cyberscan_worker.vuln import nuclei  # noqa: E402
 
 
@@ -304,3 +305,61 @@ def test_katana_run_signature_accepts_auth_params():
     params = inspect.signature(katana.run).parameters
     assert "headers" in params
     assert "cookie_header" in params
+
+
+# ---------- sslyze -------------------------------------------------------------
+
+
+def test_sslyze_parse_reports_deprecated_tls_and_hsts():
+    raw = json.dumps(
+        {
+            "server_scan_results": [
+                {
+                    "server_location": {"hostname": "example.com", "port": 443},
+                    "scan_result": {
+                        "tls_1_0_cipher_suites": {
+                            "result": {"accepted_cipher_suites": [{"cipher_suite": {"name": "TLS_RSA"}}]}
+                        },
+                        "heartbleed": {"result": {"is_vulnerable_to_heartbleed": True}},
+                        "robot": {"result": {"robot_result": "VULNERABLE_WEAK_ORACLE"}},
+                        "http_headers": {"result": {"strict_transport_security_header": None}},
+                    },
+                }
+            ]
+        }
+    )
+
+    titles = {hit.title for hit in sslyze_runner.parse(raw)}
+
+    assert "Server supports deprecated TLS 1.0" in titles
+    assert "OpenSSL Heartbleed (CVE-2014-0160)" in titles
+    assert "ROBOT attack vulnerability" in titles
+    assert "Missing HTTP Strict Transport Security (HSTS)" in titles
+
+
+def test_sslyze_runner_uses_cli_subprocess(monkeypatch, tmp_path):
+    binary = tmp_path / "sslyze"
+    binary.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    def fake_run(cmd, **kwargs):
+        json_path = Path(cmd[cmd.index("--json_out") + 1])
+        json_path.write_text(json.dumps({"server_scan_results": []}), encoding="utf-8")
+
+        class Proc:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return Proc()
+
+    monkeypatch.setenv("SSLYZE_BIN", str(binary))
+    monkeypatch.setattr(sslyze_runner.subprocess, "run", fake_run)
+
+    assert sslyze_runner.run("example.com") == []
+
+
+def test_sslyze_runner_does_not_import_sslyze_library():
+    source = Path(sslyze_runner.__file__).read_text(encoding="utf-8")
+
+    assert "from sslyze" not in source
+    assert "import sslyze" not in source

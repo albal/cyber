@@ -1,13 +1,20 @@
-"""sslyze adapter — deep TLS/SSL inspection.
+"""sslyze CLI adapter — deep TLS/SSL inspection.
 
-Uses sslyze as a Python library (not CLI). Produces structured findings
-covering: weak protocols, weak ciphers, certificate issues, Heartbleed,
-ROBOT, and missing security commitments (HSTS).
+Runs sslyze as a separate process and parses its JSON output. Produces
+structured findings covering: weak protocols, weak ciphers, certificate
+issues, Heartbleed, ROBOT, and missing security commitments (HSTS).
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
+import shutil
+import subprocess
+import tempfile
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -24,45 +31,72 @@ class TlsHit:
 
 
 def run(host: str, port: int = 443, timeout_s: int = 60) -> list[TlsHit]:
-    try:
-        from sslyze import (  # type: ignore[import-not-found]
-            Scanner,
-            ScanCommand,
-            ServerNetworkLocation,
-            ServerScanRequest,
-        )
-    except Exception as exc:  # noqa: BLE001
-        log.warning("sslyze unavailable (%s) — returning empty result", exc)
+    binary = os.environ.get("SSLYZE_BIN", "sslyze")
+    if not _command_available(binary):
+        log.warning("sslyze CLI not on PATH — returning empty result")
         return []
 
-    scan_commands = {
-        ScanCommand.SSL_2_0_CIPHER_SUITES,
-        ScanCommand.SSL_3_0_CIPHER_SUITES,
-        ScanCommand.TLS_1_0_CIPHER_SUITES,
-        ScanCommand.TLS_1_1_CIPHER_SUITES,
-        ScanCommand.TLS_1_2_CIPHER_SUITES,
-        ScanCommand.TLS_1_3_CIPHER_SUITES,
-        ScanCommand.HEARTBLEED,
-        ScanCommand.ROBOT,
-        ScanCommand.CERTIFICATE_INFO,
-        ScanCommand.HTTP_HEADERS,
-    }
-
-    try:
-        location = ServerNetworkLocation(hostname=host, port=port)
-        scanner = Scanner()
-        scanner.queue_scans([ServerScanRequest(server_location=location, scan_commands=scan_commands)])
-        results = list(scanner.get_results())
-    except Exception as exc:  # noqa: BLE001
-        log.warning("sslyze run failed for %s:%s — %s", host, port, exc)
-        return []
-
-    out: list[TlsHit] = []
     target = f"{host}:{port}"
+    with tempfile.NamedTemporaryFile(suffix=".json") as fp:
+        cmd = [
+            binary,
+            "--json_out",
+            fp.name,
+            "--quiet",
+            "--sslv2",
+            "--sslv3",
+            "--tlsv1",
+            "--tlsv1_1",
+            "--heartbleed",
+            "--robot",
+            "--certinfo",
+            "--http_headers",
+            target,
+        ]
+
+        try:
+            proc = subprocess.run(  # noqa: S603
+                cmd,
+                capture_output=True,
+                check=False,
+                text=True,
+                timeout=timeout_s,
+            )
+        except subprocess.TimeoutExpired:
+            log.warning("sslyze timed out for %s", target)
+            return []
+        except OSError as exc:
+            log.warning("sslyze run failed for %s — %s", target, exc)
+            return []
+
+        if proc.returncode != 0:
+            stderr = proc.stderr.strip() or proc.stdout.strip()
+            log.warning("sslyze run failed for %s with exit %s: %s", target, proc.returncode, stderr)
+            return []
+
+        try:
+            raw = Path(fp.name).read_text(encoding="utf-8")
+        except OSError as exc:
+            log.warning("sslyze JSON output unavailable for %s — %s", target, exc)
+            return []
+
+    return parse(raw, default_target=target)
+
+
+def parse(raw: str, default_target: str = "") -> list[TlsHit]:
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        log.warning("sslyze returned malformed JSON (%s)", exc)
+        return []
+
+    results = payload.get("server_scan_results") or []
+    out: list[TlsHit] = []
     for r in results:
-        attrs = getattr(r, "scan_result", None)
-        if attrs is None:
+        scan_result = r.get("scan_result") or {}
+        if not isinstance(scan_result, dict):
             continue
+        target = _target_from_result(r) or default_target
 
         # Weak protocol versions
         for proto, cmd in (
@@ -71,9 +105,8 @@ def run(host: str, port: int = 443, timeout_s: int = 60) -> list[TlsHit]:
             ("TLS 1.0", "tls_1_0_cipher_suites"),
             ("TLS 1.1", "tls_1_1_cipher_suites"),
         ):
-            res = getattr(attrs, cmd, None)
-            inner = getattr(res, "result", None) if res else None
-            if inner and getattr(inner, "accepted_cipher_suites", []):
+            accepted = _get(scan_result, cmd, "result", "accepted_cipher_suites")
+            if accepted:
                 out.append(
                     TlsHit(
                         title=f"Server supports deprecated {proto}",
@@ -87,9 +120,7 @@ def run(host: str, port: int = 443, timeout_s: int = 60) -> list[TlsHit]:
                 )
 
         # Heartbleed
-        hb = getattr(attrs, "heartbleed", None)
-        hb_res = getattr(hb, "result", None) if hb else None
-        if hb_res and getattr(hb_res, "is_vulnerable_to_heartbleed", False):
+        if _get(scan_result, "heartbleed", "result", "is_vulnerable_to_heartbleed"):
             out.append(
                 TlsHit(
                     title="OpenSSL Heartbleed (CVE-2014-0160)",
@@ -103,9 +134,7 @@ def run(host: str, port: int = 443, timeout_s: int = 60) -> list[TlsHit]:
             )
 
         # ROBOT
-        robot = getattr(attrs, "robot", None)
-        robot_res = getattr(robot, "result", None) if robot else None
-        rv = getattr(robot_res, "robot_result", None) if robot_res else None
+        rv = _get(scan_result, "robot", "result", "robot_result")
         if rv and "VULNERABLE" in str(rv):
             out.append(
                 TlsHit(
@@ -120,10 +149,9 @@ def run(host: str, port: int = 443, timeout_s: int = 60) -> list[TlsHit]:
             )
 
         # HSTS missing
-        hh = getattr(attrs, "http_headers", None)
-        hh_res = getattr(hh, "result", None) if hh else None
-        hsts = getattr(hh_res, "strict_transport_security_header", None) if hh_res else None
-        if hh_res and hsts is None:
+        http_headers = _get(scan_result, "http_headers", "result")
+        hsts = _get(scan_result, "http_headers", "result", "strict_transport_security_header")
+        if http_headers and hsts is None:
             out.append(
                 TlsHit(
                     title="Missing HTTP Strict Transport Security (HSTS)",
@@ -139,3 +167,28 @@ def run(host: str, port: int = 443, timeout_s: int = 60) -> list[TlsHit]:
             )
 
     return out
+
+
+def _command_available(binary: str) -> bool:
+    if os.sep in binary:
+        return Path(binary).is_file()
+    return shutil.which(binary) is not None
+
+
+def _get(obj: dict[str, Any], *keys: str) -> Any:
+    cur: Any = obj
+    for key in keys:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(key)
+    return cur
+
+
+def _target_from_result(result: dict[str, Any]) -> str:
+    location = result.get("server_location") or result.get("network_location") or {}
+    if not isinstance(location, dict):
+        return ""
+
+    hostname = location.get("hostname")
+    port = location.get("port")
+    return f"{hostname}:{port}" if hostname and port else ""
